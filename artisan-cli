@@ -1,0 +1,19 @@
+#!/bin/bash
+
+# BRAMON API - CLI Helper Script
+# Runs Artisan commands with increased memory limit
+
+# Default memory limit
+MEMORY_LIMIT="${PHP_MEMORY_LIMIT:-512M}"
+
+# Get the directory of this script
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
+# If first argument is --memory, use custom memory limit
+if [ "$1" = "--memory" ]; then
+    MEMORY_LIMIT="$2"
+    shift 2
+fi
+
+# Run artisan with increased memory limit
+exec php -d memory_limit="$MEMORY_LIMIT" "$SCRIPT_DIR/artisan" "$@"

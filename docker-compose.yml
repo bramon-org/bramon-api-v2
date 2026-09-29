@@ -1,0 +1,31 @@
+services:
+  bramon-api:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: bramon-api
+    ports:
+      - "8080:8080"
+    volumes:
+      - /mnt/dados/BRAMON:/capturas:ro,Z
+    environment:
+      - APP_ENV=development
+      - APP_DEBUG=true
+      - BRAMON_BASE_DIR=/capturas
+      - BRAMON_OPERATORS_FILE=/capturas/operators.json
+      - BRAMON_STATIONS_FILE=/capturas/stations.json
+      - BRAMON_CACHE_TTL=60
+      - BRAMON_MAX_RESULTS=1000
+    env_file:
+      - .env
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8080/v1/public/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 10s
+
+networks:
+  default:
+    name: bramon-network

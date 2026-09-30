@@ -3,39 +3,33 @@
 namespace App\Console\Commands;
 
 use Illuminate\Console\Command;
-use App\Services\CaptureIndex;
 use App\Services\DataProcessor;
 
 /**
- * Generates stations.json from the capture index.
+ * Generates stations.json directly from the filesystem.
  *
- * Reads station aggregates and metadata from the prebuilt CaptureIndex
- * (the same data source as bramon:index), so stations are derived from
- * actual captures rather than scanning the filesystem directly.
+ * Reads station metadata and capture files directly from the filesystem,
+ * without depending on the prebuilt CaptureIndex (bramon:index).
  */
 class StationsGenerate extends Command
 {
     protected $signature = 'bramon:stations-generate 
                             {--output= : Output file path (default: stations.json in base dir)}
                             {--base-dir= : Base directory for captures (default: config value)}
-                            {--index-dir= : Index directory (default: config value)}
                             {--force : Overwrite existing file without confirmation}';
 
-    protected $description = 'Generate stations.json from the capture index';
+    protected $description = 'Generate stations.json directly from the filesystem';
 
     public function handle(DataProcessor $processor): int
     {
         $baseDir = $this->option('base-dir') ?? config('bramon.base_dir');
-        $indexDir = $this->option('index-dir') ?? config('bramon.index_dir');
         $outputFile = $this->option('output') ?? config('bramon.stations_file', $baseDir . '/stations.json');
         $force = $this->option('force');
 
-        $this->info("Reading from index: {$indexDir}");
+        $this->info("Reading from filesystem: {$baseDir}");
 
-        $index = new CaptureIndex($indexDir);
-
-        if (!$index->exists()) {
-            $this->error('Capture index not found. Run php artisan bramon:index first.');
+        if (!is_dir($baseDir)) {
+            $this->error("Base directory does not exist: {$baseDir}");
             return self::FAILURE;
         }
 
@@ -46,10 +40,10 @@ class StationsGenerate extends Command
             }
         }
 
-        $this->info('Reading stations from index...');
+        $this->info('Reading stations from filesystem...');
 
-        // Get stations from the index (same as bramon:index does)
-        $stations = $processor->stationsFromIndex($index);
+        // Get stations directly from the filesystem (no index dependency)
+        $stations = $processor->stationsFromFileSystem();
 
         // Build stations.json content
         $stationsJson = [];

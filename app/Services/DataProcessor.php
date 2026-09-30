@@ -291,6 +291,117 @@ class DataProcessor
     }
 
     /**
+     * Build station objects directly from the filesystem.
+     *
+     * Streams capture files from the base directory and aggregates them
+     * by station, without depending on the prebuilt CaptureIndex. This is
+     * used by bramon:stations-generate to produce stations.json from a
+     * fresh filesystem scan.
+     *
+     * @return array<int,array<string,mixed>>
+     */
+    public function stationsFromFileSystem(): array
+    {
+        $stations = [];
+        $stationData = [];
+
+        // Stream files from the filesystem, aggregating by station
+        foreach ($this->fileReader->getFilesGenerator(false) as $file) {
+            $station = $file['station'];
+            $capturedAt = null;
+
+            // Parse datetime from filename
+            try {
+                $dt = \DateTime::createFromFormat('YmdHis', $file['date'] . $file['time']);
+                if ($dt) {
+                    $capturedAt = $dt->format('Y-m-d H:i:s');
+                }
+            } catch (\Throwable) {
+                // Skip files with invalid dates
+            }
+
+            if (!isset($stationData[$station])) {
+                $stationData[$station] = [
+                    'capture_count' => 1,
+                    'first_capture' => $capturedAt,
+                    'last_capture' => $capturedAt,
+                ];
+                continue;
+            }
+
+            $stationData[$station]['capture_count']++;
+
+            if ($capturedAt !== null) {
+                if ($stationData[$station]['first_capture'] === null || $capturedAt < $stationData[$station]['first_capture']) {
+                    $stationData[$station]['first_capture'] = $capturedAt;
+                }
+
+                if ($stationData[$station]['last_capture'] === null || $capturedAt > $stationData[$station]['last_capture']) {
+                    $stationData[$station]['last_capture'] = $capturedAt;
+                }
+            }
+        }
+
+        // Load curated metadata from stations.json
+        $metadata = $this->stationReader?->getStationsIndexed() ?? [];
+
+        // Build station objects
+        foreach ($stationData as $stationName => $data) {
+            $stations[] = $this->buildStationFromData($stationName, $metadata[$stationName] ?? null, $data);
+        }
+
+        // Add stations that have metadata but no captures yet
+        foreach ($metadata as $stationName => $meta) {
+            if ($stationName === '' || isset($stationData[$stationName])) {
+                continue;
+            }
+
+            $stations[] = $this->buildStationFromData($stationName, $meta, null);
+        }
+
+        // Attach operators
+        $this->attachOperators($stations, $metadata);
+
+        // Sort by name
+        usort($stations, fn($a, $b) => strcmp($a['name'], $b['name']));
+
+        return $stations;
+    }
+
+    /**
+     * Build a station record from filesystem data.
+     *
+     * @param  array<string,mixed>|null  $stationData
+     * @param  array<string,mixed>|null  $aggregate
+     * @return array<string,mixed>
+     */
+    protected function buildStationFromData(string $stationName, ?array $stationData, ?array $aggregate): array
+    {
+        return [
+            'id' => $stationData['id'] ?? substr(md5($stationName), 0, 32),
+            'name' => $stationName,
+            'operador' => null,
+            'city' => $stationData['city'] ?? 'Unknown',
+            'state' => $stationData['state'] ?? 'Unknown',
+            'country' => $stationData['country'] ?? 'BR',
+            'latitude' => (float) ($stationData['latitude'] ?? 0),
+            'longitude' => (float) ($stationData['longitude'] ?? 0),
+            'altitude' => isset($stationData['altitude']) && is_numeric($stationData['altitude']) ? (float) $stationData['altitude'] : null,
+            'azimuth' => (float) ($stationData['azimuth'] ?? 0),
+            'elevation' => (float) ($stationData['elevation'] ?? 0),
+            'fov' => (float) ($stationData['fov'] ?? 0),
+            'camera_model' => $stationData['camera_model'] ?? 'Unknown',
+            'camera_lens' => $stationData['camera_lens'] ?? 'Unknown',
+            'camera_capture' => $stationData['camera_capture'] ?? 'Unknown',
+            'active' => (bool) ($stationData['active'] ?? true),
+            'visible' => (bool) ($stationData['visible'] ?? true),
+            'capture_count' => (int) ($aggregate['capture_count'] ?? 0),
+            'first_capture' => $aggregate['first_capture'] ?? null,
+            'last_capture' => $aggregate['last_capture'] ?? null,
+        ];
+    }
+
+    /**
      * Build station objects straight from the on-disk index aggregates.
      *
      * This is the path used by the listing endpoints: it merges the

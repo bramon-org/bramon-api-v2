@@ -71,7 +71,12 @@ use OpenApi\Attributes as OA;
             example: 'd15605f23fa41195af8ca4626d43ef5e',
         ),
         new OA\Property(property: 'name', type: 'string', example: 'STA01'),
-        new OA\Property(property: 'operador', type: 'string', nullable: true, example: 'THIAGO_PAES'),
+        new OA\Property(
+            property: 'operador',
+            description: 'Operador responsável pela estação, no mesmo formato de /operators. Resolvido pelo nome da estação; null quando não há operador vinculado.',
+            allOf: [new OA\Items(ref: '#/components/schemas/Operator')],
+            nullable: true,
+        ),
         new OA\Property(property: 'city', type: 'string', example: 'São Paulo'),
         new OA\Property(property: 'state', type: 'string', example: 'SP'),
         new OA\Property(property: 'country', type: 'string', example: 'BR'),

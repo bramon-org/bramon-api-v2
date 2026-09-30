@@ -85,4 +85,65 @@ class OperatorReaderTest extends TestCase
         $this->assertNotContains('TLP1', $linked);
         $this->assertNotContains('TLP2', $linked);
     }
+
+    public function testFindOperatorForStationByExplicitList(): void
+    {
+        $reader = new OperatorReader();
+
+        $match = $reader->findOperatorForStation('TLP2', [
+            ['id' => 'op-ana', 'estacoes' => ['TLP1', 'TLP2']],
+            ['id' => 'op-bruno', 'estacoes' => ['TLP3']],
+        ]);
+
+        $this->assertSame('op-ana', $match['id']);
+    }
+
+    public function testFindOperatorForStationByPrefix(): void
+    {
+        $reader = new OperatorReader();
+
+        $match = $reader->findOperatorForStation('TLP7', [
+            ['id' => 'op-ana', 'estacao' => 'STA'],
+            ['id' => 'op-bruno', 'estacao' => 'TLP'],
+        ]);
+
+        $this->assertSame('op-bruno', $match['id']);
+    }
+
+    public function testFindOperatorForStationIgnoresUnknownStation(): void
+    {
+        $reader = new OperatorReader();
+
+        $operators = [
+            ['id' => 'op-ana', 'estacoes' => ['TLP1']],
+            ['id' => 'op-bruno', 'estacao' => 'STA'],
+        ];
+
+        $this->assertNull($reader->findOperatorForStation('TLP9', $operators));
+        $this->assertNull($reader->findOperatorForStation('', $operators));
+    }
+
+    public function testFindOperatorForStationDoesNotLetAnExplicitListLeakThroughThePrefix(): void
+    {
+        $reader = new OperatorReader();
+
+        // 'estacao' would claim TLP1..TLP9, but the explicit list is authoritative
+        // and only holds TLP1, so TLP2 belongs to nobody.
+        $operators = [
+            ['id' => 'op-ana', 'estacoes' => ['TLP1'], 'estacao' => 'TLP'],
+        ];
+
+        $this->assertSame('op-ana', $reader->findOperatorForStation('TLP1', $operators)['id']);
+        $this->assertNull($reader->findOperatorForStation('TLP2', $operators));
+    }
+
+    public function testGetLinkedStationNamesAcceptsAPlainNameList(): void
+    {
+        $reader = new OperatorReader();
+
+        $this->assertSame(
+            ['TLP1', 'TLP2'],
+            $reader->getLinkedStationNames(['estacao' => 'TLP'], ['TLP1', 'TLP2', 'STA1'])
+        );
+    }
 }

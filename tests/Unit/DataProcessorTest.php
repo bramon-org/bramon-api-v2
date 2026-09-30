@@ -4,6 +4,7 @@ namespace Tests\Unit;
 
 use App\Services\DataProcessor;
 use App\Services\FileSystemReader;
+use App\Services\OperatorReader;
 use Tests\TestCase;
 
 class DataProcessorTest extends TestCase
@@ -97,6 +98,129 @@ class DataProcessorTest extends TestCase
         $this->assertCount(2, $operators);
         $this->assertEquals('Operador TLP1', $operators[0]['name']);
         $this->assertEquals('Operador TLP2', $operators[1]['name']);
+    }
+
+    public function testAttachOperatorsResolvesFromTheStationName(): void
+    {
+        $processor = $this->processorWithOperators([
+            [
+                'id' => 'op-ana',
+                'nome' => 'Ana Silva',
+                'email' => 'ana@bramonmeteor.org',
+                'estacoes' => ['TLP1'],
+            ],
+            [
+                'id' => 'op-bruno',
+                'nome' => 'Bruno Dias',
+                'email' => 'bruno@bramonmeteor.org',
+                'estacao' => 'TLP2',
+            ],
+        ]);
+
+        $stations = [
+            ['name' => 'TLP1', 'operador' => null],
+            ['name' => 'TLP2', 'operador' => null],
+        ];
+
+        $processor->attachOperators($stations);
+
+        // Explicit 'estacoes' list.
+        $this->assertSame('op-ana', $stations[0]['operador']['id']);
+        $this->assertSame('Ana Silva', $stations[0]['operador']['name']);
+
+        // 'estacao' prefix.
+        $this->assertSame('op-bruno', $stations[1]['operador']['id']);
+        $this->assertSame('Bruno Dias', $stations[1]['operador']['name']);
+    }
+
+    public function testAttachedOperatorCarriesTheFullOperatorPayload(): void
+    {
+        $processor = $this->processorWithOperators([
+            [
+                'id' => 'op-ana',
+                'nome' => 'Ana Silva',
+                'email' => 'ana@bramonmeteor.org',
+                'estacoes' => ['TLP1', 'TLP2'],
+                'visivel' => false,
+                'ativo' => true,
+            ],
+        ]);
+
+        $stationList = [
+            ['name' => 'TLP1'],
+            ['name' => 'TLP2'],
+        ];
+
+        $stations = [
+            ['name' => 'TLP1', 'operador' => null],
+            ['name' => 'TLP2', 'operador' => null],
+        ];
+
+        $processor->attachOperators($stations);
+
+        // Byte-for-byte what /operators returns for the same operator.
+        $this->assertSame($processor->processOperators($stationList)[0], $stations[0]['operador']);
+        $this->assertSame($processor->processOperators($stationList)[0], $stations[1]['operador']);
+    }
+
+    public function testAttachOperatorsFallsBackToTheDeclaredOperatorId(): void
+    {
+        $processor = $this->processorWithOperators([
+            ['id' => 'op-ana', 'nome' => 'Ana Silva', 'estacao' => 'STA'],
+        ]);
+
+        $stations = [
+            ['name' => 'TLP1', 'operador' => null],
+        ];
+
+        $processor->attachOperators($stations, [
+            'TLP1' => ['name' => 'TLP1', 'operador' => 'op-ana'],
+        ]);
+
+        $this->assertSame('op-ana', $stations[0]['operador']['id']);
+    }
+
+    public function testAttachOperatorsLeavesUnownedStationsNull(): void
+    {
+        $processor = $this->processorWithOperators([
+            ['id' => 'op-ana', 'nome' => 'Ana Silva', 'estacao' => 'STA'],
+        ]);
+
+        $stations = [
+            ['name' => 'TLP1', 'operador' => null],
+        ];
+
+        $processor->attachOperators($stations, [
+            // Dangling id from an older dataset: no operator matches it.
+            'TLP1' => ['name' => 'TLP1', 'operador' => 'ffffffff-eeee-dddd-cccc-bbbbbbbbbbbb'],
+        ]);
+
+        $this->assertNull($stations[0]['operador']);
+    }
+
+    public function testAttachOperatorsSynthesisesOneOperatorPerStationWithoutOperatorsFile(): void
+    {
+        $stations = [
+            ['name' => 'TLP1', 'operador' => null],
+        ];
+
+        $this->processor->attachOperators($stations);
+
+        $this->assertSame('Operador TLP1', $stations[0]['operador']['name']);
+        $this->assertSame(['TLP1'], $stations[0]['operador']['stations']);
+    }
+
+    /**
+     * DataProcessor wired to an OperatorReader serving the given operators.
+     *
+     * @param  array<int,array<string,mixed>>  $operators
+     */
+    protected function processorWithOperators(array $operators): DataProcessor
+    {
+        $file = tempnam(sys_get_temp_dir(), 'bramon_ops_') . '.json';
+        file_put_contents($file, json_encode($operators));
+
+        return new DataProcessor($this->fileReader, new OperatorReader($file), null);
     }
 
     public function testCalculateStats(): void

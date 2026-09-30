@@ -1150,9 +1150,13 @@
                         "example": "STA01"
                     },
                     "operador": {
-                        "type": "string",
-                        "example": "THIAGO_PAES",
-                        "nullable": true
+                        "description": "Operador responsável pela estação, no mesmo formato de /operators. Resolvido pelo nome da estação; null quando não há operador vinculado.",
+                        "nullable": true,
+                        "allOf": [
+                            {
+                                "$ref": "#/components/schemas/Operator"
+                            }
+                        ]
                     },
                     "city": {
                         "type": "string",

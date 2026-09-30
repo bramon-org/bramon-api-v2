@@ -128,11 +128,13 @@ class DataProcessor
      */
     public function processStations(iterable $captures): array
     {
-        if ($this->stationReader) {
-            return $this->loadStationsFromFile($captures);
-        }
+        $stations = $this->stationReader
+            ? $this->loadStationsFromFile($captures)
+            : $this->processStationsFromCaptures($captures);
 
-        return $this->processStationsFromCaptures($captures);
+        $this->attachOperators($stations);
+
+        return $stations;
     }
 
     /**
@@ -256,7 +258,8 @@ class DataProcessor
             $stations[] = [
                 'id' => $stationData['id'] ?? substr(md5($stationName), 0, 32),
                 'name' => $stationName,
-                'operador' => $stationData['operador'] ?? null,
+                // Resolved by attachOperators() from the station name.
+                'operador' => null,
                 'city' => $stationData['city'] ?? 'Unknown',
                 'state' => $stationData['state'] ?? 'Unknown',
                 'country' => $stationData['country'] ?? 'BR',
@@ -316,13 +319,95 @@ class DataProcessor
             $stations[] = $this->buildStation($stationName, $stationData, null);
         }
 
+        $this->attachOperators($stations, $metadata);
+
         usort($stations, fn($a, $b) => strcmp($a['name'], $b['name']));
 
         return $stations;
     }
 
     /**
+     * Resolve the 'operador' node of every station to the full operator payload.
+     *
+     * The de-para is made from the station name, mirroring the operator -> station
+     * linking used by /operators, so both endpoints always agree on ownership.
+     * Priority per station:
+     * 1. the operator's explicit 'estacoes' list contains the station name
+     * 2. the station name starts with the operator's 'estacao' prefix
+     * 3. the station file's own 'operador' field matches an operator id
+     *
+     * When operators.json is missing or empty, one operator is synthesised per
+     * station — the same records processOperators() falls back to — so a station
+     * is never returned without an operator on a fresh install.
+     *
+     * Callers must pass the complete station list, because the nested 'stations'
+     * and 'station_count' are filtered against it and have to stay identical to
+     * what /operators returns for the same operator.
+     *
+     * @param  array<int,array<string,mixed>>  $stations
+     * @param  array<string,array<string,mixed>>  $metadata  stations.json indexed by name
+     */
+    public function attachOperators(array &$stations, array $metadata = []): void
+    {
+        if ($stations === []) {
+            return;
+        }
+
+        $metadata = $metadata ?: ($this->stationReader?->getStationsIndexed() ?? []);
+
+        $rawOperators = array_values(array_filter(
+            $this->operatorReader?->getOperators() ?? [],
+            'is_array'
+        ));
+
+        if ($rawOperators === []) {
+            foreach ($stations as &$station) {
+                $station['operador'] = $this->buildFallbackOperator($station['name']);
+            }
+            unset($station);
+
+            return;
+        }
+
+        // Normalise every operator once, so station and operator endpoints share
+        // the exact same payload.
+        $stationNames = array_column($stations, 'name');
+        $operatorsById = [];
+
+        foreach ($rawOperators as $rawOperator) {
+            $operator = $this->buildOperator(
+                $rawOperator,
+                $this->operatorReader->getLinkedStationNames($rawOperator, $stationNames)
+            );
+
+            $operatorsById[(string) $operator['id']] = $operator;
+        }
+
+        foreach ($stations as &$station) {
+            $stationName = $station['name'];
+
+            $match = $this->operatorReader->findOperatorForStation($stationName, $rawOperators);
+
+            if ($match !== null) {
+                $station['operador'] = $operatorsById[(string) ($match['id'] ?? '')] ?? null;
+                continue;
+            }
+
+            // Last resort: the station file may already declare the operator id.
+            $declaredId = $metadata[$stationName]['operador'] ?? null;
+
+            $station['operador'] = is_string($declaredId) && $declaredId !== ''
+                ? ($operatorsById[$declaredId] ?? null)
+                : null;
+        }
+        unset($station);
+    }
+
+    /**
      * Assemble a single station record.
+     *
+     * The 'operador' node is left null here and resolved afterwards by
+     * attachOperators(), which turns the station name into the operator object.
      *
      * @param  array<string,mixed>|null  $stationData
      * @param  array<string,mixed>|null  $aggregate
@@ -333,7 +418,7 @@ class DataProcessor
         return [
             'id' => $stationData['id'] ?? substr(md5($stationName), 0, 32),
             'name' => $stationName,
-            'operador' => $stationData['operador'] ?? null,
+            'operador' => null,
             'city' => $stationData['city'] ?? 'Unknown',
             'state' => $stationData['state'] ?? 'Unknown',
             'country' => $stationData['country'] ?? 'BR',
@@ -359,45 +444,32 @@ class DataProcessor
      * Falls back to one operator per station when operators.json is missing or
      * contains no usable entries, so a fresh install still lists operators
      * instead of returning an empty page.
+     *
+     * @param  array<int,array<string,mixed>>  $stations
+     * @return array<int,array<string,mixed>>
      */
     public function processOperators(array $stations): array
     {
         $operators = [];
 
-        $rawOperators = $this->operatorReader?->getOperators() ?? [];
+        $rawOperators = array_values(array_filter(
+            $this->operatorReader?->getOperators() ?? [],
+            'is_array'
+        ));
 
-        if (!empty($rawOperators)) {
-            $stationMap = array_column($stations, null, 'name');
+        if ($rawOperators !== []) {
+            $stationNames = array_column($stations, 'name');
 
             foreach ($rawOperators as $opData) {
-                $linkedStations = $this->operatorReader->getLinkedStations($opData, $stationMap);
-
-                $operators[] = [
-                    'id' => $opData['id'] ?? substr(md5($opData['email'] ?? ''), 0, 32),
-                    'name' => $opData['nome'] ?? $opData['name'] ?? 'Operador Desconhecido',
-                    'email' => $opData['email'] ?? '',
-                    'role' => $opData['role'] ?? 'operator',
-                    'visible' => (bool) ($opData['visivel'] ?? $opData['visible'] ?? true),
-                    'active' => (bool) ($opData['ativo'] ?? $opData['active'] ?? true),
-                    'station_count' => count($linkedStations),
-                    'stations' => array_values($linkedStations),
-                ];
+                $operators[] = $this->buildOperator(
+                    $opData,
+                    $this->operatorReader->getLinkedStationNames($opData, $stationNames)
+                );
             }
         } else {
             // Fallback: generate operators from stations
             foreach ($stations as $station) {
-                $operatorId = substr(md5("op_{$station['name']}"), 0, 32);
-
-                $operators[] = [
-                    'id' => $operatorId,
-                    'name' => "Operador {$station['name']}",
-                    'email' => strtolower($station['name']) . '@bramonmeteor.org',
-                    'role' => 'operator',
-                    'visible' => true,
-                    'active' => true,
-                    'station_count' => 1,
-                    'stations' => [$station['name']],
-                ];
+                $operators[] = $this->buildFallbackOperator($station['name']);
             }
         }
 
@@ -405,6 +477,48 @@ class DataProcessor
         usort($operators, fn($a, $b) => strcmp($a['name'], $b['name']));
 
         return $operators;
+    }
+
+    /**
+     * Normalise a raw operators.json entry into the public operator payload.
+     *
+     * @param  array<string,mixed>  $opData
+     * @param  array<int,string>  $linkedStations
+     * @return array<string,mixed>
+     */
+    protected function buildOperator(array $opData, array $linkedStations): array
+    {
+        return [
+            'id' => $opData['id'] ?? substr(md5($opData['email'] ?? ''), 0, 32),
+            'name' => $opData['nome'] ?? $opData['name'] ?? 'Operador Desconhecido',
+            'email' => $opData['email'] ?? '',
+            'role' => $opData['role'] ?? 'operator',
+            'visible' => (bool) ($opData['visivel'] ?? $opData['visible'] ?? true),
+            'active' => (bool) ($opData['ativo'] ?? $opData['active'] ?? true),
+            'station_count' => count($linkedStations),
+            'stations' => array_values($linkedStations),
+        ];
+    }
+
+    /**
+     * Synthetic operator for a station, used when operators.json has no usable
+     * entry. attachOperators() and processOperators() share it so the station and
+     * operator endpoints never disagree.
+     *
+     * @return array<string,mixed>
+     */
+    protected function buildFallbackOperator(string $stationName): array
+    {
+        return [
+            'id' => substr(md5("op_{$stationName}"), 0, 32),
+            'name' => "Operador {$stationName}",
+            'email' => strtolower($stationName) . '@bramonmeteor.org',
+            'role' => 'operator',
+            'visible' => true,
+            'active' => true,
+            'station_count' => 1,
+            'stations' => [$stationName],
+        ];
     }
 
     /**

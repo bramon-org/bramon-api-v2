@@ -7,12 +7,29 @@ use Illuminate\Http\Resources\Json\JsonResource;
 
 class StationResource extends JsonResource
 {
+    /**
+     * The operator owning this station, or null when the station is unowned.
+     *
+     * Resolved through OperatorResource so the nested object is byte-for-byte the
+     * same payload as the one served by /operators.
+     */
+    protected function operador(Request $request): ?array
+    {
+        $operator = $this->resource['operador'] ?? null;
+
+        if (!is_array($operator)) {
+            return null;
+        }
+
+        return (new OperatorResource($operator))->resolve($request);
+    }
+
     public function toArray(Request $request): array
     {
         return [
             'id' => $this['id'],
             'name' => $this['name'],
-            'operador' => $this['operador'],
+            'operador' => $this->operador($request),
             'city' => $this['city'],
             'state' => $this['state'],
             'country' => $this['country'],

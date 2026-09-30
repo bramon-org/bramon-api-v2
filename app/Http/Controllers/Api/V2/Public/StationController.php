@@ -35,7 +35,7 @@ class StationController extends Controller
         path: '/stations',
         tags: ['Stations'],
         summary: 'Lista estações',
-        description: 'Devolve as estações paginadas, ordenadas alfabeticamente por nome. Todos os campos vêm do manifesto do índice; nenhuma pasta de capturas é aberta.',
+        description: 'Devolve as estações paginadas, ordenadas alfabeticamente por nome. Todos os campos vêm do manifesto do índice; nenhuma pasta de capturas é aberta. O nó "operador" traz o operador responsável, com o mesmo formato de /operators, resolvido pelo nome da estação.',
         operationId: 'listStations',
         parameters: [
             new OA\Parameter(ref: '#/components/parameters/page'),
@@ -105,7 +105,7 @@ class StationController extends Controller
         path: '/stations/{stationName}',
         tags: ['Stations'],
         summary: 'Detalha uma estação',
-        description: 'Devolve uma estação pelo seu código/nome, incluindo a contagem de capturas e a janela de atividade. Os metadados vêm de stations.json; apenas os agregados de captura vêm do índice.',
+        description: 'Devolve uma estação pelo seu código/nome, incluindo a contagem de capturas, a janela de atividade e o operador responsável (nó "operador", mesmo formato de /operators). Os metadados vêm de stations.json; apenas os agregados de captura vêm do índice.',
         operationId: 'getStation',
         parameters: [
             new OA\Parameter(

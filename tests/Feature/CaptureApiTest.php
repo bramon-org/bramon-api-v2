@@ -215,7 +215,7 @@ class CaptureApiTest extends TestCase
             ->assertJsonStructure([
                 'data' => [
                     '*' => [
-                        'id', 'name', 'city', 'state', 'country', 'active', 'visible',
+                        'id', 'name', 'operador', 'city', 'state', 'country', 'active', 'visible',
                         'capture_count', 'first_capture', 'last_capture',
                     ],
                 ],
@@ -227,6 +227,49 @@ class CaptureApiTest extends TestCase
                 'has_prev',
             ])
             ->assertJsonPath('total', 2);
+    }
+
+    public function testStationCarriesTheOperatorObjectInItsOperadorNode(): void
+    {
+        $response = $this->getJson('/api/v2/public/stations/TLP1');
+
+        $response->assertStatus(200)
+            ->assertJsonPath('operador.id', 'op-ana')
+            ->assertJsonPath('operador.name', 'Ana Silva')
+            ->assertJsonPath('operador.email', 'ana@bramonmeteor.org')
+            ->assertJsonPath('operador.role', 'operator')
+            ->assertJsonPath('operador.visible', true)
+            ->assertJsonPath('operador.active', true)
+            ->assertJsonPath('operador.station_count', 1)
+            ->assertJsonPath('operador.stations', ['TLP1']);
+    }
+
+    public function testStationOperadorNodeIsIdenticalToTheOperatorsEndpoint(): void
+    {
+        $station = $this->getJson('/api/v2/public/stations/TLP1')->assertStatus(200)->json('operador');
+        $operator = $this->getJson('/api/v2/public/operators/op-ana')->assertStatus(200)->json();
+
+        $this->assertSame($operator, $station);
+    }
+
+    public function testStationsListResolvesOperadorForEveryStation(): void
+    {
+        $response = $this->getJson('/api/v2/public/stations');
+
+        $response->assertStatus(200)
+            // TLP1 is listed in the operator's explicit 'estacoes' list.
+            ->assertJsonPath('data.0.name', 'TLP1')
+            ->assertJsonPath('data.0.operador.id', 'op-ana')
+            // TLP2 is claimed by nobody, so the node stays null.
+            ->assertJsonPath('data.1.name', 'TLP2')
+            ->assertJsonPath('data.1.operador', null);
+    }
+
+    public function testStationOperadorNodeIsNullWhenNoOperatorIsLinked(): void
+    {
+        $this->getJson('/api/v2/public/stations/TLP2')
+            ->assertStatus(200)
+            ->assertJsonPath('operador', null);
     }
 
     public function testStationShowEndpoint(): void

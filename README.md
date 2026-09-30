@@ -178,6 +178,37 @@ curl -X POST http://localhost:8080/api/v2/public/cache/invalidate
 1. Campo `estacoes` (lista explícita) - **prioridade máxima**
 2. Campo `estacao` (prefixo) - fallback
 
+### Ligação estação → operador
+
+O nó `operador` de `GET /stations` e `GET /stations/{name}` devolve o **operador
+responsável como objeto**, com exatamente o mesmo formato de `GET /operators`:
+
+```json
+{
+  "id": "TLP",
+  "name": "THIAGO_PAES",
+  "email": "thiago.paes@bramonmeteor.org",
+  "role": "operator",
+  "visible": true,
+  "active": true,
+  "station_count": 10,
+  "stations": ["TLP1", "TLP10", "TLP2"]
+}
+```
+
+O de-para é feito **a partir do nome da estação**, invertendo as mesmas regras de
+`operators.json`, de modo que `/stations` e `/operators` nunca discordam sobre quem
+possui cada estação. Para cada estação, nesta ordem:
+
+1. a lista `estacoes` do operador contém o nome da estação
+2. o nome da estação começa com o prefixo `estacao` do operador
+3. o campo `operador` da própria `stations.json` bate com o `id` de um operador
+
+Um operador com lista `estacoes` explícita nunca "vaza" pelo seu prefixo. Se
+`operators.json` estiver ausente ou vazio, um operador é sintetizado por estação —
+o mesmo fallback usado por `/operators`. Quando nenhuma regra casa, `operador`
+retorna `null`.
+
 ### stations.json
 ```json
 [
@@ -202,6 +233,10 @@ curl -X POST http://localhost:8080/api/v2/public/cache/invalidate
   }
 ]
 ```
+
+> O campo `operador` de `stations.json` é apenas o **fallback final** do de-para.
+> A vinculação principal usa o nome da estação contra `operators.json`, porque
+> em produção esse UUID não corresponde ao `id` de nenhum operador.
 
 ## 💾 Cache
 

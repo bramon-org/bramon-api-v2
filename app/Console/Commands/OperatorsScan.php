@@ -4,6 +4,7 @@ namespace App\Console\Commands;
 
 use Illuminate\Console\Command;
 use App\Services\FileSystemReader;
+use App\Services\OperatorReader;
 use Illuminate\Support\Facades\Log;
 
 /**
@@ -194,9 +195,9 @@ class OperatorsScan extends Command
             }
 
             $nome = $info['observer'] ?? $info['lid'] ?? 'Operador Desconhecido';
-            // Generate email preserving name part (replace non-alphanumeric with dots, remove leading/trailing dots)
-            $emailBase = strtolower(trim(preg_replace('/[^a-z0-9]+/i', '.', $nome), '.'));
-            $email = $emailBase ? $emailBase . '@bramonmeteor.org' : 'operador@bramonmeteor.org';
+            // No capture carries an address, so it is derived from the name —
+            // the same rule the indexer uses, to keep both in sync.
+            $email = OperatorReader::emailFromName($nome);
 
             return [
                 'id' => $info['lid'] ?? $this->generateOperatorId(['nome' => $nome]),

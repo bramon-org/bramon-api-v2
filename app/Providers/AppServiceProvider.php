@@ -47,7 +47,10 @@ class AppServiceProvider extends ServiceProvider
             return new DataProcessor(
                 $app->make(FileSystemReader::class),
                 $app->make(OperatorReader::class),
-                $app->make(StationReader::class)
+                $app->make(StationReader::class),
+                // Lets a station without an operators.json entry be described by
+                // the operator its captures actually recorded.
+                $app->make(CaptureIndex::class)
             );
         });
     }

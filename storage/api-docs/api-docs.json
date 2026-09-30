@@ -452,7 +452,7 @@
                     "Stations"
                 ],
                 "summary": "Lista estações",
-                "description": "Devolve as estações paginadas, ordenadas alfabeticamente por nome. Todos os campos vêm do manifesto do índice; nenhuma pasta de capturas é aberta.",
+                "description": "Devolve as estações paginadas, ordenadas alfabeticamente por nome. Todos os campos vêm do manifesto do índice; nenhuma pasta de capturas é aberta. O nó \"operador\" traz o operador responsável, com o mesmo formato de /operators, resolvido pelo nome da estação.",
                 "operationId": "listStations",
                 "parameters": [
                     {
@@ -508,7 +508,7 @@
                     "Stations"
                 ],
                 "summary": "Detalha uma estação",
-                "description": "Devolve uma estação pelo seu código/nome, incluindo a contagem de capturas e a janela de atividade. Os metadados vêm de stations.json; apenas os agregados de captura vêm do índice.",
+                "description": "Devolve uma estação pelo seu código/nome, incluindo a contagem de capturas, a janela de atividade e o operador responsável (nó \"operador\", mesmo formato de /operators). Os metadados vêm de stations.json; apenas os agregados de captura vêm do índice.",
                 "operationId": "getStation",
                 "parameters": [
                     {
@@ -1180,12 +1180,21 @@
                         "format": "double",
                         "example": -46.6333
                     },
+                    "altitude": {
+                        "description": "Altitude em metros, lida da captura mais recente com posicionamento válido. Null quando nenhuma captura registrou.",
+                        "type": "number",
+                        "format": "double",
+                        "example": 12,
+                        "nullable": true
+                    },
                     "azimuth": {
+                        "description": "Apenas curado em stations.json: nenhuma captura registra azimute.",
                         "type": "number",
                         "format": "double",
                         "example": 180
                     },
                     "elevation": {
+                        "description": "Apenas curado em stations.json: nenhuma captura registra elevação.",
                         "type": "number",
                         "format": "double",
                         "example": 760
@@ -1284,6 +1293,26 @@
                             "TLP1",
                             "TLP2"
                         ]
+                    },
+                    "latitude": {
+                        "description": "Posição medida na primeira estação de `stations`. Nenhuma captura registra onde o operador mora, então a coordenada é a da estação.",
+                        "type": "number",
+                        "format": "double",
+                        "example": -27.5904,
+                        "nullable": true
+                    },
+                    "longitude": {
+                        "type": "number",
+                        "format": "double",
+                        "example": -48.5925,
+                        "nullable": true
+                    },
+                    "altitude": {
+                        "description": "Altitude em metros, da mesma captura da latitude/longitude.",
+                        "type": "number",
+                        "format": "double",
+                        "example": 12,
+                        "nullable": true
                     }
                 },
                 "type": "object"

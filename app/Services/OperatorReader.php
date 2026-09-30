@@ -13,6 +13,20 @@ class OperatorReader extends JsonFileReader
     }
 
     /**
+     * Derive a BRAMON address from an operator name.
+     *
+     * No capture ever carries an e-mail: the metadata tag only records the
+     * observer name, so the address is always a slug of that name. Shared by
+     * the indexer and by the operators scan so both derive the same value.
+     */
+    public static function emailFromName(string $name): string
+    {
+        $base = strtolower(trim((string) preg_replace('/[^a-z0-9]+/i', '.', $name), '.'));
+
+        return $base !== '' ? $base . '@bramonmeteor.org' : 'operador@bramonmeteor.org';
+    }
+
+    /**
      * Find stations linked to an operator.
      * Priority: 1. explicit 'estacoes' list, 2. 'estacao' prefix
      *

@@ -35,6 +35,7 @@ class StationResource extends JsonResource
             'country' => $this['country'],
             'latitude' => $this['latitude'],
             'longitude' => $this['longitude'],
+            'altitude' => $this['altitude'],
             'azimuth' => $this['azimuth'],
             'elevation' => $this['elevation'],
             'fov' => $this['fov'],

@@ -192,7 +192,10 @@ responsável como objeto**, com exatamente o mesmo formato de `GET /operators`:
   "visible": true,
   "active": true,
   "station_count": 10,
-  "stations": ["TLP1", "TLP10", "TLP2"]
+  "stations": ["TLP1", "TLP10", "TLP2"],
+  "latitude": -27.5904,
+  "longitude": -48.5925,
+  "altitude": 12.0
 }
 ```
 
@@ -204,10 +207,61 @@ possui cada estação. Para cada estação, nesta ordem:
 2. o nome da estação começa com o prefixo `estacao` do operador
 3. o campo `operador` da própria `stations.json` bate com o `id` de um operador
 
-Um operador com lista `estacoes` explícita nunca "vaza" pelo seu prefixo. Se
-`operators.json` estiver ausente ou vazio, um operador é sintetizado por estação —
-o mesmo fallback usado por `/operators`. Quando nenhuma regra casa, `operador`
-retorna `null`.
+Um operador com lista `estacoes` explícita nunca "vaza" pelo seu prefixo. Quando
+nenhuma regra casa, `operador` retorna `null`.
+
+### Ligação quando `operators.json` está ausente ou vazio
+
+`operators.json` continua sendo a fonte autoritativa. Sem ele, `/operators` e
+`/stations` sintetizam um operador por estação, mas o nome e o e-mail saem do
+observador lido do XML das capturas dessa estação:
+
+```json
+{ "id": "9df799e2…", "name": "THIAGO_PAES", "email": "thiago.paes@bramonmeteor.org", "stations": ["TLP7"] }
+```
+
+Quem popula isso é o índice: `bramon:index` lê a tag `<ufocapture_record>` de cada
+captura (`observer` = nome, `lid` = código) e grava o resultado em
+`station_aggregates[estação].operator` no `manifest.json`. Nenhuma captura tem
+campo de e-mail, então o endereço é derivado do nome — a mesma regra usada por
+`bramon:operators-scan`. Uma estação cujas capturas não nomeiam ninguém continua
+recebendo o par genérico `Operador {ESTACAO}` / `{estacao}@bramonmeteor.org`.
+
+> Como o manifesto passou a guardar `operator`, um índice no formato anterior é
+> ignorado (a versão do formato é validada na leitura). Rode `bramon:index` após
+> atualizar.
+
+### Geolocalização
+
+A mesma tag `<ufocapture_record>` carrega `lat`, `lng` e `alt`. O `bramon:index`
+lê os três, descarta a posição inutilizável — ausente, não numérica, fora de
+`-90..90`/`-180..180`, ou o `0/0` que uma estação sem fixo GPS grava — e guarda em
+`station_aggregates[estação].geolocation` a da **captura mais recente que fixou
+posição**, não simplesmente a da última captura. Como o passe de agregação percorre
+as capturas da mais nova para a mais antiga, basta guardar a primeira que serve.
+
+Isso é uma medição, então latitude, longitude e altitude têm prioridade sobre o
+`stations.json`:
+
+| Endpoint | Campo | Origem |
+|---|---|---|
+| `/stations` | `latitude`, `longitude` | última captura válida da estação; senão `stations.json` |
+| `/stations` | `altitude` (**novo**) | `alt` da última captura válida; senão `stations.json._metadata.altitude` |
+| `/operators` | `latitude`, `longitude`, `altitude` (**novos**) | mesma captura da **primeira** estação de `stations` |
+
+`azimuth` e `elevation` **não** saem das capturas: nenhum dos 32.903 XMLs de
+metadados tem esses atributos, então continuam vindos do `stations.json` — onde
+estão `0` para todas as 10 estações. Para a altura do ponto de observação use
+`altitude`.
+
+O operador não tem posição própria em lugar nenhum: nenhum XML registra onde a
+pessoa mora. A coordenada devolvida é a da primeira estação da lista `stations`
+dele, na ordem declarada no `operators.json` (não alfabética). Os três campos
+sempre estão presentes e são `null` quando essa estação ainda não fixou posição.
+
+Como o manifesto passou a guardar também `geolocation`, um índice no formato
+anterior é ignorado (a versão do formato é validada na leitura). Rode
+`bramon:index` após atualizar.
 
 ### stations.json
 ```json
@@ -224,6 +278,7 @@ retorna `null`.
     "longitude": "-48.5925",
     "azimuth": "45",
     "elevation": "30",
+    "_metadata": { "altitude": "12.0" },
     "fov": "90",
     "camera_model": "IMX291",
     "camera_lens": "Generic_F095_6mm",
@@ -237,6 +292,10 @@ retorna `null`.
 > O campo `operador` de `stations.json` é apenas o **fallback final** do de-para.
 > A vinculação principal usa o nome da estação contra `operators.json`, porque
 > em produção esse UUID não corresponde ao `id` de nenhum operador.
+
+> `latitude`, `longitude` e `_metadata.altitude` também são apenas fallback: o
+> índice sobrepõe com a posição medida nas capturas. `azimuth` e `elevation` são
+> curados apenas e nenhuma captura os registra.
 
 ## 💾 Cache
 

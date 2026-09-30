@@ -15,12 +15,16 @@ class CaptureIndexTest extends TestCase
 
     protected string $indexDir;
 
+    /** @var array<int,string> Scratch trees built by a test, removed on tearDown. */
+    protected array $extraTrees = [];
+
     protected function setUp(): void
     {
         parent::setUp();
 
         $this->baseDir = sys_get_temp_dir() . '/bramon_index_test_' . getmypid();
         $this->indexDir = $this->baseDir . '_index';
+        $this->extraTrees = [];
 
         $this->buildFixtureTree();
     }
@@ -29,6 +33,12 @@ class CaptureIndexTest extends TestCase
     {
         $this->deleteTree($this->baseDir);
         $this->deleteTree($this->indexDir);
+
+        foreach ($this->extraTrees as $tree) {
+            $this->deleteTree($tree);
+        }
+
+        $this->extraTrees = [];
 
         parent::tearDown();
     }
@@ -253,6 +263,144 @@ class CaptureIndexTest extends TestCase
         $mergedIds = array_column($index->capturesPage(1, 10)['items'], 'id');
 
         $this->assertSame($referenceIds, $mergedIds);
+    }
+
+    public function testStationAggregatesRecordOperatorFromMetadata(): void
+    {
+        $index = $this->buildIndex();
+
+        $operator = $index->stationOperator('TLP1');
+
+        // Name and e-mail come from the capture's <ufocapture_record observer=...>
+        // tag: the name verbatim, the address derived from it.
+        $this->assertNotNull($operator);
+        $this->assertSame('Ana', $operator['name']);
+        $this->assertSame('ana@bramonmeteor.org', $operator['email']);
+
+        $this->assertSame('Ana', $index->stationOperator('TLP2')['name']);
+        $this->assertNull($index->stationOperator('NOPE'));
+    }
+
+    public function testStationWithoutObserverRecordsNoOperator(): void
+    {
+        // A station whose only capture metadata names nobody: the aggregate still
+        // exists, but there is no operator to record.
+        $baseDir = $this->baseDir . '_noobserver';
+        $indexDir = $this->indexDir . '_noobserver';
+        $dir = $baseDir . '/TLP9/20250802';
+        @mkdir($dir, 0775, true);
+
+        file_put_contents($dir . '/M20250802_034905_TLP_1.xml', '<ufocapture_record sid="1" cam="IMX291"/>');
+        file_put_contents($dir . '/M20250802_034905_TLP_1P.jpg', 'preview');
+
+        $index = new CaptureIndex($indexDir);
+        $index->rebuild(new FileSystemReader($baseDir, 0), null, 100);
+
+        $this->assertNull($index->stationOperator('TLP9'));
+        $this->assertArrayHasKey('operator', $index->stationAggregate('TLP9'));
+        $this->assertSame(1, $index->stationAggregate('TLP9')['count']);
+
+        $index->flush();
+        $this->deleteTree($baseDir);
+        $this->deleteTree($indexDir);
+    }
+
+    public function testStationAggregateKeepsTheNewestUsableFix(): void
+    {
+        $index = $this->buildGeolocationIndex();
+
+        // TLP8: both captures fixed the position, the newest one wins.
+        $this->assertSame(
+            ['latitude' => -27.5904, 'longitude' => -48.5925, 'altitude' => 12.0],
+            $index->stationGeolocation('TLP8')
+        );
+
+        // TLP9: the newest capture never got a fix, so the older one is used
+        // instead of serving 0/0 as if it were a location.
+        $this->assertSame(
+            ['latitude' => -27.5914, 'longitude' => -48.5894, 'altitude' => 45.0],
+            $index->stationGeolocation('TLP9')
+        );
+
+        // TLP7: a capture without an `alt` attribute still yields coordinates.
+        $this->assertSame(
+            ['latitude' => -23.5505, 'longitude' => -46.6333, 'altitude' => null],
+            $index->stationGeolocation('TLP7')
+        );
+
+        // TLP6: no capture ever fixed a position.
+        $this->assertNull($index->stationGeolocation('TLP6'));
+        $this->assertNull($index->stationGeolocation('NOPE'));
+
+        $index->flush();
+    }
+
+    public function testGeolocationRejectsUnusableCoordinates(): void
+    {
+        $baseDir = $this->baseDir . '_badgeo';
+        $indexDir = $this->indexDir . '_badgeo';
+        $dir = $baseDir . '/TLP1/20250802';
+        @mkdir($dir, 0775, true);
+
+        $stem = 'M20250802_034905_TLP_1';
+
+        // Out of range, non-numeric and unparseable coordinates are all
+        // rejected the same way an absent one is.
+        file_put_contents("{$dir}/{$stem}.xml", '<ufocapture_record lat="91" lng="0" alt="1"/>');
+        file_put_contents("{$dir}/{$stem}1.xml", '<ufocapture_record lat="abc" lng="0" alt="1"/>');
+        file_put_contents("{$dir}/{$stem}2.xml", '<ufocapture_record lat="-27.5" alt="1"/>');
+        file_put_contents("{$dir}/{$stem}3.xml", '<ufocapture_record observer="Ana"/>');
+        file_put_contents("{$dir}/{$stem}_1P.jpg", 'preview');
+
+        $index = new CaptureIndex($indexDir);
+        $index->rebuild(new FileSystemReader($baseDir, 0), null, 100);
+
+        $this->assertNull($index->stationGeolocation('TLP1'));
+        // The observer is still read from the same tag.
+        $this->assertSame('Ana', $index->stationOperator('TLP1')['name']);
+
+        $index->flush();
+        $this->deleteTree($baseDir);
+        $this->deleteTree($indexDir);
+    }
+
+    /**
+     * Four stations exercising the position rules: newest fix wins, a newest
+     * capture without a fix falls back to the previous one, a missing `alt`,
+     * and a station that was never fixed at all.
+     */
+    protected function buildGeolocationIndex(): CaptureIndex
+    {
+        $baseDir = $this->baseDir . '_geo';
+        $indexDir = $this->indexDir . '_geo';
+
+        $captures = [
+            ['TLP8', '20250801', 'lat="-27.5914" lng="-48.5894" alt="45.0"'],
+            ['TLP8', '20250803', 'lat="-27.5904" lng="-48.5925" alt="12.0"'],
+            ['TLP9', '20250801', 'lat="-27.5914" lng="-48.5894" alt="45.0"'],
+            ['TLP9', '20250803', 'lat="0" lng="0" alt="0"'],
+            ['TLP7', '20250803', 'lat="-23.5505" lng="-46.6333"'],
+            ['TLP6', '20250803', 'sid="1" cam="IMX291"'],
+        ];
+
+        foreach ($captures as $i => [$station, $date, $position]) {
+            $dir = "{$baseDir}/{$station}/{$date}";
+            @mkdir($dir, 0775, true);
+
+            $stem = sprintf('M%s_1000%02d_%s_1', $date, $i, $station);
+
+            file_put_contents("{$dir}/{$stem}.xml", "<ufocapture_record observer=\"Ana\" {$position}/>");
+            file_put_contents("{$dir}/{$stem}P.jpg", 'preview');
+        }
+
+        $index = new CaptureIndex($indexDir);
+        $index->rebuild(new FileSystemReader($baseDir, 0), null, 100);
+
+        // Keep the paths around for tearDown to clean up.
+        $this->extraTrees[] = $baseDir;
+        $this->extraTrees[] = $indexDir;
+
+        return $index;
     }
 
     public function testFlushRemovesArtifacts(): void

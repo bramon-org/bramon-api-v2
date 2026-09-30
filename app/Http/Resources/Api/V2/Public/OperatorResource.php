@@ -18,6 +18,9 @@ class OperatorResource extends JsonResource
             'active' => $this['active'],
             'station_count' => $this['station_count'],
             'stations' => $this['stations'],
+            'latitude' => $this['latitude'] ?? null,
+            'longitude' => $this['longitude'] ?? null,
+            'altitude' => $this['altitude'] ?? null,
         ];
     }
 }

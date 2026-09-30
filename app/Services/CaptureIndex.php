@@ -27,16 +27,24 @@ use RuntimeException;
 class CaptureIndex
 {
     /** Bumped whenever the on-disk layout changes. */
-    public const VERSION = 2;
+    public const VERSION = 4;
 
     /** Magic bytes prefix for the fixed-width offset table. */
     private const OFFSET_BYTES = 8;
+
+    /**
+     * Bytes read from a metadata file when looking for the record tag.
+     *
+     * The <ufocapture_record> tag is the second line of every capture, so this
+     * window is generous while still bounding the read to a fixed size.
+     */
+    private const METADATA_HEAD_BYTES = 16384;
 
     protected string $indexDir;
 
     protected ?array $manifest = null;
 
-    /** @var array<string,array{count:int,first:?string,last:?string}> */
+    /** @var array<string,array{count:int,first:?string,last:?string,operator:?array<string,mixed>,geolocation:?array<string,mixed>}> */
     protected ?array $stationAggregates = null;
 
     protected bool $autoBuild;
@@ -181,7 +189,7 @@ class CaptureIndex
     /**
      * Per-station count and first/last capture timestamps.
      *
-     * @return array<string,array{count:int,first:?string,last:?string}>
+     * @return array<string,array{count:int,first:?string,last:?string,operator:?array<string,mixed>,geolocation:?array<string,mixed>}>
      */
     public function stationAggregates(): array
     {
@@ -204,6 +212,36 @@ class CaptureIndex
     public function stationAggregate(string $station): ?array
     {
         return $this->stationAggregates()[$station] ?? null;
+    }
+
+    /**
+     * The operator observed at a station, as read from the capture metadata
+     * during the last rebuild, or null when no capture named one.
+     *
+     * This is the same name/e-mail pair a capture records, so a station never
+     * has to be described by a synthetic operator when operators.json is
+     * missing. operators.json still wins whenever it is present.
+     *
+     * @return array{id:string,name:string,email:string}|null
+     */
+    public function stationOperator(string $station): ?array
+    {
+        $operator = $this->stationAggregate($station)['operator'] ?? null;
+
+        return is_array($operator) ? $operator : null;
+    }
+
+    /**
+     * Position of a station, taken from its most recent capture that recorded a
+     * usable fix, or null when none did.
+     *
+     * @return array{latitude:float,longitude:float,altitude:?float}|null
+     */
+    public function stationGeolocation(string $station): ?array
+    {
+        $geolocation = $this->stationAggregate($station)['geolocation'] ?? null;
+
+        return is_array($geolocation) ? $geolocation : null;
     }
 
     /* ------------------------------------------------------------------ */
@@ -695,6 +733,11 @@ class CaptureIndex
         $filesSeen = 0;
         $totalFiles = 0;
 
+        // Facts extracted from XML metadata, cached per capture so a file is
+        // only opened once no matter how many files share it.
+        /** @var array<string,array{operator:?array<string,string>,geolocation:?array<string,?float>}> $metadataFacts */
+        $metadataFacts = [];
+
         foreach ($reader->getFilesGenerator(false) as $file) {
             $filesSeen++;
 
@@ -703,6 +746,10 @@ class CaptureIndex
             }
 
             $key = "{$file['station']}_{$file['date']}_{$file['time']}";
+
+            if (($file['type'] ?? null) === 'metadata' && !isset($metadataFacts[$key]) && isset($file['path'])) {
+                $metadataFacts[$key] = $this->readMetadataFacts($file['path']);
+            }
 
             if (!isset($pending[$key])) {
                 if (count($pending) >= $chunkSize) {
@@ -745,6 +792,8 @@ class CaptureIndex
         $byStationRecords = [];
 
         foreach ($sorter->sorted() as [$sortKey, $capture]) {
+            $captureKey = $capture['station'] . '_' . $capture['capture_date'] . '_' . $capture['capture_time'];
+
             $line = json_encode($capture, JSON_UNESCAPED_UNICODE);
 
             if ($line === false) {
@@ -768,6 +817,8 @@ class CaptureIndex
                     'count' => 0,
                     'first' => $capturedAt,
                     'last' => $capturedAt,
+                    'operator' => null,
+                    'geolocation' => null,
                 ];
             }
 
@@ -789,6 +840,21 @@ class CaptureIndex
                 $latest = $capturedAt;
             }
 
+            // Pass 2 walks the captures newest first, so the first capture that
+            // carries an operator or a usable fix is the most recent one that
+            // does. Later captures only fill what is still missing.
+            $facts = $metadataFacts[$captureKey] ?? null;
+
+            if ($facts !== null) {
+                if ($aggregates[$station]['operator'] === null && $facts['operator'] !== null) {
+                    $aggregates[$station]['operator'] = $facts['operator'];
+                }
+
+                if ($aggregates[$station]['geolocation'] === null && $facts['geolocation'] !== null) {
+                    $aggregates[$station]['geolocation'] = $facts['geolocation'];
+                }
+            }
+
             $byStationRecords[$station][] = $lineIndex;
 
             $totalCaptures++;
@@ -797,6 +863,8 @@ class CaptureIndex
 
         fclose($capturesHandle);
         fclose($linesHandle);
+
+        unset($metadataFacts);
 
         if ($progress !== null) {
             $progress($filesSeen, 'writing-station-index');
@@ -948,6 +1016,111 @@ class CaptureIndex
         }
 
         $pending = [];
+    }
+
+    /**
+     * Read the operator and the position a capture recorded in its metadata.
+     *
+     * The metadata is the only place either is ever recorded: the record tag
+     * carries the observer, the station code and the coordinates, and no
+     * capture carries an e-mail, so the address is derived from the name. Only
+     * the head of the file is read, because the record tag is always at the top.
+     *
+     * @return array{operator:?array<string,string>,geolocation:?array<string,?float>}
+     */
+    protected function readMetadataFacts(string $path): array
+    {
+        $none = ['operator' => null, 'geolocation' => null];
+
+        $handle = @fopen($path, 'rb');
+
+        if ($handle === false) {
+            return $none;
+        }
+
+        $head = fread($handle, self::METADATA_HEAD_BYTES);
+        fclose($handle);
+
+        if (!is_string($head) || $head === '') {
+            return $none;
+        }
+
+        if (preg_match('/<ufocapture_record\b[^>]*>/', $head, $tagMatch) !== 1) {
+            return $none;
+        }
+
+        $tag = $tagMatch[0];
+
+        return [
+            'operator' => $this->operatorFromTag($tag),
+            'geolocation' => $this->geolocationFromTag($tag),
+        ];
+    }
+
+    /**
+     * Pull the observer and the station code out of a record tag.
+     *
+     * A capture with no observer still identifies the operator by station code,
+     * which is what `lid` holds.
+     *
+     * @return array{id:string,name:string,email:string}|null
+     */
+    protected function operatorFromTag(string $tag): ?array
+    {
+        $observer = preg_match('/\bobserver="([^"]*)"/', $tag, $match) === 1 ? trim($match[1]) : '';
+        $lid = preg_match('/\blid="([^"]*)"/', $tag, $match) === 1 ? trim($match[1]) : '';
+
+        $name = $observer !== '' ? $observer : $lid;
+
+        if ($name === '') {
+            return null;
+        }
+
+        return [
+            'id' => $lid !== '' ? $lid : $name,
+            'name' => $name,
+            'email' => OperatorReader::emailFromName($name),
+        ];
+    }
+
+    /**
+     * Pull the coordinates out of a record tag, discarding unusable fixes.
+     *
+     * A capture recorded before the station got a fix, or with the GPS off,
+     * stores 0/0. That is not a location, so it never becomes the station's
+     * position and an older capture with a real fix is used instead.
+     *
+     * @return array{latitude:float,longitude:float,altitude:?float}|null
+     */
+    protected function geolocationFromTag(string $tag): ?array
+    {
+        $hasLat = preg_match('/\blat="([^"]*)"/', $tag, $latMatch) === 1;
+        $hasLng = preg_match('/\blng="([^"]*)"/', $tag, $lngMatch) === 1;
+
+        if (!$hasLat || !$hasLng || !is_numeric(trim($latMatch[1])) || !is_numeric(trim($lngMatch[1]))) {
+            return null;
+        }
+
+        $latitude = (float) trim($latMatch[1]);
+        $longitude = (float) trim($lngMatch[1]);
+
+        if (($latitude == 0.0 && $longitude == 0.0)
+            || $latitude < -90.0 || $latitude > 90.0
+            || $longitude < -180.0 || $longitude > 180.0) {
+            return null;
+        }
+
+        $altitude = null;
+
+        if (preg_match('/\balt="([^"]*)"/', $tag, $altMatch) === 1 && is_numeric(trim($altMatch[1]))) {
+            $altitude = (float) trim($altMatch[1]);
+        }
+
+        return [
+            'latitude' => $latitude,
+            'longitude' => $longitude,
+            'altitude' => $altitude,
+        ];
     }
 
     /* ------------------------------------------------------------------ */

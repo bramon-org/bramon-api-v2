@@ -7,15 +7,18 @@ class DataProcessor
     protected FileSystemReader $fileReader;
     protected ?OperatorReader $operatorReader;
     protected ?StationReader $stationReader;
+    protected ?CaptureIndex $index;
 
     public function __construct(
         FileSystemReader $fileReader,
         ?OperatorReader $operatorReader = null,
-        ?StationReader $stationReader = null
+        ?StationReader $stationReader = null,
+        ?CaptureIndex $index = null
     ) {
         $this->fileReader = $fileReader;
         $this->operatorReader = $operatorReader;
         $this->stationReader = $stationReader;
+        $this->index = $index;
     }
 
     /**
@@ -185,6 +188,7 @@ class DataProcessor
                 'country' => 'BR',
                 'latitude' => 0.0,
                 'longitude' => 0.0,
+                'altitude' => null,
                 'azimuth' => 0.0,
                 'elevation' => 0.0,
                 'fov' => 0.0,
@@ -265,6 +269,7 @@ class DataProcessor
                 'country' => $stationData['country'] ?? 'BR',
                 'latitude' => (float)($stationData['latitude'] ?? 0),
                 'longitude' => (float)($stationData['longitude'] ?? 0),
+                'altitude' => $this->curatedAltitude($stationData),
                 'azimuth' => (float)($stationData['azimuth'] ?? 0),
                 'elevation' => (float)($stationData['elevation'] ?? 0),
                 'fov' => (float)($stationData['fov'] ?? 0),
@@ -409,12 +414,20 @@ class DataProcessor
      * The 'operador' node is left null here and resolved afterwards by
      * attachOperators(), which turns the station name into the operator object.
      *
+     * Latitude, longitude and altitude come from the position the index read
+     * out of the station's most recent capture with a usable fix, which is a
+     * measurement. The curated stations.json entry is the fallback for a
+     * station whose captures never recorded one. No capture carries azimuth or
+     * elevation, so those stay curated-only.
+     *
      * @param  array<string,mixed>|null  $stationData
      * @param  array<string,mixed>|null  $aggregate
      * @return array<string,mixed>
      */
     protected function buildStation(string $stationName, ?array $stationData, ?array $aggregate): array
     {
+        $geolocation = is_array($aggregate['geolocation'] ?? null) ? $aggregate['geolocation'] : null;
+
         return [
             'id' => $stationData['id'] ?? substr(md5($stationName), 0, 32),
             'name' => $stationName,
@@ -422,8 +435,9 @@ class DataProcessor
             'city' => $stationData['city'] ?? 'Unknown',
             'state' => $stationData['state'] ?? 'Unknown',
             'country' => $stationData['country'] ?? 'BR',
-            'latitude' => (float) ($stationData['latitude'] ?? 0),
-            'longitude' => (float) ($stationData['longitude'] ?? 0),
+            'latitude' => $this->measuredFloat($geolocation, 'latitude') ?? (float) ($stationData['latitude'] ?? 0),
+            'longitude' => $this->measuredFloat($geolocation, 'longitude') ?? (float) ($stationData['longitude'] ?? 0),
+            'altitude' => $this->measuredFloat($geolocation, 'altitude') ?? $this->curatedAltitude($stationData),
             'azimuth' => (float) ($stationData['azimuth'] ?? 0),
             'elevation' => (float) ($stationData['elevation'] ?? 0),
             'fov' => (float) ($stationData['fov'] ?? 0),
@@ -436,6 +450,34 @@ class DataProcessor
             'first_capture' => $aggregate['first'] ?? null,
             'last_capture' => $aggregate['last'] ?? null,
         ];
+    }
+
+    /**
+     * A coordinate measured by a capture, or null when it has none.
+     *
+     * The manifest is JSON, so a whole number comes back as an int on the next
+     * run. Casting keeps altitude a float across the rebuild boundary instead
+     * of the value changing shape between the first run and every later one.
+     *
+     * @param  array<string,mixed>|null  $geolocation
+     */
+    protected function measuredFloat(?array $geolocation, string $key): ?float
+    {
+        $value = $geolocation[$key] ?? null;
+
+        return is_numeric($value) ? (float) $value : null;
+    }
+
+    /**
+     * Altitude curated in stations.json, when the station file records one.
+     *
+     * @param  array<string,mixed>|null  $stationData
+     */
+    protected function curatedAltitude(?array $stationData): ?float
+    {
+        $altitude = $stationData['altitude'] ?? $stationData['_metadata']['altitude'] ?? null;
+
+        return is_numeric($altitude) ? (float) $altitude : null;
     }
 
     /**
@@ -488,7 +530,9 @@ class DataProcessor
      */
     protected function buildOperator(array $opData, array $linkedStations): array
     {
-        return [
+        $linkedStations = array_values($linkedStations);
+
+        return array_merge([
             'id' => $opData['id'] ?? substr(md5($opData['email'] ?? ''), 0, 32),
             'name' => $opData['nome'] ?? $opData['name'] ?? 'Operador Desconhecido',
             'email' => $opData['email'] ?? '',
@@ -496,7 +540,34 @@ class DataProcessor
             'visible' => (bool) ($opData['visivel'] ?? $opData['visible'] ?? true),
             'active' => (bool) ($opData['ativo'] ?? $opData['active'] ?? true),
             'station_count' => count($linkedStations),
-            'stations' => array_values($linkedStations),
+            'stations' => $linkedStations,
+        ], $this->operatorGeolocation($linkedStations));
+    }
+
+    /**
+     * Position served for an operator, taken from the first station it owns.
+     *
+     * No capture records where an operator lives, so the position is the one
+     * measured at that station: the index already resolved it from the
+     * station's most recent capture with a usable fix.
+     *
+     * The station list is built in the operators.json order, so "first" is the
+     * station the operator declared first. Fields are always present, and null
+     * when that station has no measured position yet.
+     *
+     * @param  array<int,string>  $linkedStations
+     * @return array{latitude:?float,longitude:?float,altitude:?float}
+     */
+    protected function operatorGeolocation(array $linkedStations): array
+    {
+        $first = $linkedStations[0] ?? null;
+
+        $geolocation = $first !== null ? $this->index?->stationGeolocation($first) : null;
+
+        return [
+            'latitude' => $this->measuredFloat($geolocation, 'latitude'),
+            'longitude' => $this->measuredFloat($geolocation, 'longitude'),
+            'altitude' => $this->measuredFloat($geolocation, 'altitude'),
         ];
     }
 
@@ -505,20 +576,32 @@ class DataProcessor
      * entry. attachOperators() and processOperators() share it so the station and
      * operator endpoints never disagree.
      *
+     * The name and address come from the operator the index recorded while
+     * reading the station's captures, which is what a capture actually says.
+     * Only a station with no metadata at all falls back to the generic
+     * "Operador {estacao}" pair.
+     *
      * @return array<string,mixed>
      */
     protected function buildFallbackOperator(string $stationName): array
     {
-        return [
+        $recorded = $this->index?->stationOperator($stationName);
+
+        $recordedName = is_string($recorded['name'] ?? null) ? trim($recorded['name']) : '';
+        $recordedEmail = is_string($recorded['email'] ?? null) ? trim($recorded['email']) : '';
+
+        return array_merge([
             'id' => substr(md5("op_{$stationName}"), 0, 32),
-            'name' => "Operador {$stationName}",
-            'email' => strtolower($stationName) . '@bramonmeteor.org',
+            'name' => $recordedName !== '' ? $recordedName : "Operador {$stationName}",
+            'email' => $recordedEmail !== ''
+                ? $recordedEmail
+                : strtolower($stationName) . '@bramonmeteor.org',
             'role' => 'operator',
             'visible' => true,
             'active' => true,
             'station_count' => 1,
             'stations' => [$stationName],
-        ];
+        ], $this->operatorGeolocation([$stationName]));
     }
 
     /**

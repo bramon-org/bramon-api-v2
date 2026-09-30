@@ -2,9 +2,11 @@
 
 namespace Tests\Unit;
 
+use App\Services\CaptureIndex;
 use App\Services\DataProcessor;
 use App\Services\FileSystemReader;
 use App\Services\OperatorReader;
+use App\Services\StationReader;
 use Tests\TestCase;
 
 class DataProcessorTest extends TestCase
@@ -208,6 +210,237 @@ class DataProcessorTest extends TestCase
 
         $this->assertSame('Operador TLP1', $stations[0]['operador']['name']);
         $this->assertSame(['TLP1'], $stations[0]['operador']['stations']);
+    }
+
+    public function testFallbackOperatorUsesTheNameAndEmailRecordedByTheIndex(): void
+    {
+        $processor = $this->processorWithIndexedOperator('THIAGO_PAES', 'thiago.paes@bramonmeteor.org');
+
+        $stations = [
+            ['name' => 'TLP1', 'operador' => null],
+        ];
+
+        $processor->attachOperators($stations);
+
+        // The captures of TLP1 name the observer, so that is what is served —
+        // not the generic "Operador TLP1" pair.
+        $this->assertSame('THIAGO_PAES', $stations[0]['operador']['name']);
+        $this->assertSame('thiago.paes@bramonmeteor.org', $stations[0]['operador']['email']);
+        $this->assertSame(['TLP1'], $stations[0]['operador']['stations']);
+
+        $this->assertSame('THIAGO_PAES', $processor->processOperators($stations)[0]['name']);
+    }
+
+    public function testFallbackOperatorFallsBackToTheStationWhenTheIndexKnowsNobody(): void
+    {
+        $processor = $this->processorWithIndexedOperator(null, null);
+
+        $stations = [
+            ['name' => 'TLP1', 'operador' => null],
+        ];
+
+        $processor->attachOperators($stations);
+
+        $this->assertSame('Operador TLP1', $stations[0]['operador']['name']);
+        $this->assertSame('tlp1@bramonmeteor.org', $stations[0]['operador']['email']);
+    }
+
+    public function testStationGeolocationComesFromTheIndexedFix(): void
+    {
+        [$processor, $index] = $this->indexedStations([
+            'TLP1' => $this->indexedAggregate(geolocation: [
+                'latitude' => -27.5904,
+                'longitude' => -48.5925,
+                'altitude' => 12.0,
+            ]),
+        ], [
+            ['name' => 'TLP1', 'latitude' => -23.5505, 'longitude' => -46.6333, '_metadata' => ['altitude' => '760']],
+        ]);
+
+        $stations = $processor->stationsFromIndex($index);
+
+        $this->assertSame(-27.5904, $stations[0]['latitude']);
+        $this->assertSame(-48.5925, $stations[0]['longitude']);
+        $this->assertSame(12.0, $stations[0]['altitude']);
+
+        // Curated-only fields have no capture source, so they are untouched.
+        $this->assertSame(0.0, $stations[0]['azimuth']);
+        $this->assertSame(0.0, $stations[0]['elevation']);
+    }
+
+    public function testStationFallsBackToCuratedGeolocationWithoutAnIndexedFix(): void
+    {
+        [$processor, $index] = $this->indexedStations([
+            'TLP1' => $this->indexedAggregate(),
+            'TLP2' => $this->indexedAggregate(),
+        ], [
+            [
+                'name' => 'TLP1',
+                'latitude' => '-27.5904',
+                'longitude' => '-48.5925',
+                '_metadata' => ['altitude' => '12.0'],
+            ],
+            ['name' => 'TLP2', 'latitude' => -23.5505, 'longitude' => -46.6333],
+        ]);
+
+        $stations = $processor->stationsFromIndex($index);
+
+        // No capture fixed a position: the curated station entry is used, and
+        // the altitude it curates under _metadata is surfaced as `altitude`.
+        $this->assertSame(-27.5904, $stations[0]['latitude']);
+        $this->assertSame(12.0, $stations[0]['altitude']);
+
+        // Nothing curated either: coordinates stay at zero and altitude is null
+        // rather than pretending to be a measurement.
+        $this->assertSame(-23.5505, $stations[1]['latitude']);
+        $this->assertNull($stations[1]['altitude']);
+    }
+
+    public function testOperatorGeolocationComesFromTheFirstLinkedStation(): void
+    {
+        [$processor, $index] = $this->indexedStations([
+            'TLP1' => $this->indexedAggregate(geolocation: [
+                'latitude' => -27.5904,
+                'longitude' => -48.5925,
+                'altitude' => 12.0,
+            ]),
+            'TLP2' => $this->indexedAggregate(geolocation: [
+                'latitude' => -23.5505,
+                'longitude' => -46.6333,
+                'altitude' => 760.0,
+            ]),
+            'TLP3' => $this->indexedAggregate(),
+        ], null, [
+            ['id' => 'op-ana', 'nome' => 'Ana', 'email' => 'ana@bramonmeteor.org', 'estacoes' => ['TLP2', 'TLP1']],
+            ['id' => 'op-bruno', 'nome' => 'Bruno', 'email' => 'bruno@bramonmeteor.org', 'estacoes' => ['TLP3', 'TLP2']],
+        ]);
+
+        $stations = $processor->stationsFromIndex($index);
+        $operators = $processor->processOperators($stations);
+
+        // The declared order wins: TLP2 is the first station of this operator,
+        // so its position is served and TLP1's is ignored.
+        $this->assertSame(-23.5505, $operators[0]['latitude']);
+        $this->assertSame(-46.6333, $operators[0]['longitude']);
+        $this->assertSame(760.0, $operators[0]['altitude']);
+
+        // First station never fixed a position: the fields are present and null.
+        $this->assertNull($operators[1]['latitude']);
+        $this->assertNull($operators[1]['longitude']);
+        $this->assertNull($operators[1]['altitude']);
+    }
+
+    public function testAttachedOperatorCarriesTheSameGeolocationAsTheOperatorsEndpoint(): void
+    {
+        [$processor, $index] = $this->indexedStations([
+            'TLP1' => $this->indexedAggregate(geolocation: [
+                'latitude' => -27.5904,
+                'longitude' => -48.5925,
+                'altitude' => 12.0,
+            ]),
+        ], null, [
+            ['id' => 'op-ana', 'nome' => 'Ana', 'email' => 'ana@bramonmeteor.org', 'estacoes' => ['TLP1']],
+        ]);
+
+        $stations = $processor->stationsFromIndex($index);
+        $listed = $processor->processOperators($stations);
+
+        $this->assertSame($listed[0]['latitude'], $stations[0]['operador']['latitude']);
+        $this->assertSame($listed[0]['longitude'], $stations[0]['operador']['longitude']);
+        $this->assertSame($listed[0]['altitude'], $stations[0]['operador']['altitude']);
+    }
+
+    public function testFallbackOperatorCarriesItsOwnStationGeolocation(): void
+    {
+        [$processor, $index] = $this->indexedStations([
+            'TLP1' => $this->indexedAggregate(geolocation: [
+                'latitude' => -27.5904,
+                'longitude' => -48.5925,
+                'altitude' => 12.0,
+            ]),
+        ]);
+
+        $stations = $processor->stationsFromIndex($index);
+        $operators = $processor->processOperators($stations);
+
+        $this->assertSame('Operador TLP1', $operators[0]['name']);
+        $this->assertSame(-27.5904, $operators[0]['latitude']);
+        $this->assertSame(12.0, $operators[0]['altitude']);
+    }
+
+    /**
+     * DataProcessor wired to a CaptureIndex whose manifest already recorded the
+     * operator of TLP1, as `bramon:index` does from the capture metadata.
+     */
+    protected function processorWithIndexedOperator(?string $name, ?string $email): DataProcessor
+    {
+        $operator = $name === null ? null : ['id' => 'TLP', 'name' => $name, 'email' => $email];
+
+        return $this->indexedStations([
+            'TLP1' => $this->indexedAggregate($operator),
+        ])[0];
+    }
+
+    /**
+     * A DataProcessor and the CaptureIndex behind it, whose manifest already
+     * recorded the given station aggregates, as `bramon:index` does from the
+     * capture metadata.
+     *
+     * @param  array<string,array<string,mixed>>  $aggregates
+     * @param  array<int,array<string,mixed>>|null  $stationsFile
+     * @param  array<int,array<string,mixed>>|null  $operators
+     * @return array{0:DataProcessor,1:CaptureIndex}
+     */
+    protected function indexedStations(array $aggregates, ?array $stationsFile = null, ?array $operators = null): array
+    {
+        $dir = sys_get_temp_dir() . '/bramon_index_ops_' . getmypid() . '_' . uniqid();
+        @mkdir($dir, 0775, true);
+
+        file_put_contents($dir . '/manifest.json', json_encode([
+            'version' => CaptureIndex::VERSION,
+            'station_aggregates' => $aggregates,
+        ]));
+
+        $index = new CaptureIndex($dir);
+
+        $stationReader = null;
+
+        if ($stationsFile !== null) {
+            $file = tempnam(sys_get_temp_dir(), 'bramon_stations_') . '.json';
+            file_put_contents($file, json_encode($stationsFile));
+            $stationReader = new StationReader($file);
+        }
+
+        $operatorReader = null;
+
+        if ($operators !== null) {
+            $file = tempnam(sys_get_temp_dir(), 'bramon_ops_') . '.json';
+            file_put_contents($file, json_encode($operators));
+            $operatorReader = new OperatorReader($file);
+        }
+
+        return [
+            new DataProcessor($this->fileReader, $operatorReader, $stationReader, $index),
+            $index,
+        ];
+    }
+
+    /**
+     * A station aggregate as the rebuild writes it.
+     *
+     * @param  array<string,mixed>|null  $operator
+     * @param  array<string,mixed>|null  $geolocation
+     * @return array<string,mixed>
+     */
+    protected function indexedAggregate(?array $operator = null, ?array $geolocation = null): array
+    {
+        return [
+            'count' => 1,
+            'first' => '2025-08-02 03:49:05',
+            'last' => '2025-08-02 03:49:05',
+            'operator' => $operator,
+            'geolocation' => $geolocation,
+        ];
     }
 
     /**

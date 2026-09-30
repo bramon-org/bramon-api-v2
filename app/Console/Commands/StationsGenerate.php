@@ -15,21 +15,15 @@ class StationsGenerate extends Command
 
     protected $description = 'Generate stations.json file from capture index';
 
-    public function handle(CaptureIndex $index, DataProcessor $processor): int
+    public function handle(DataProcessor $processor): int
     {
-        $baseDir = $this->option('base-dir') ?: config('bramon.base_dir');
-        $outputFile = $this->option('output') ?: $baseDir . '/stations.json';
-        $force = $this->option('force');
+        $indexDir = config('bramon.index_dir', base_path('storage/index'));
+        $stationsFile = config('bramon.stations_file', base_path('storage/stations.json'));
 
-        $this->info("Debug: baseDir={$baseDir}");
-        $this->info("Debug: outputFile={$outputFile}");
+        $this->info("Debug: indexDir={$indexDir}");
+        $this->info("Debug: stationsFile={$stationsFile}");
 
-        if (file_exists($outputFile) && !$force) {
-            if (!$this->confirm("File {$outputFile} already exists. Overwrite?")) {
-                $this->info('Operation cancelled.');
-                return self::SUCCESS;
-            }
-        }
+        $index = new \App\Services\CaptureIndex($indexDir);
 
         if (!$index->exists()) {
             $this->error('Capture index not found or not built. Run php artisan bramon:index first.');
@@ -72,16 +66,16 @@ class StationsGenerate extends Command
             return self::FAILURE;
         }
 
-        $result = file_put_contents($outputFile, $json);
+        $result = file_put_contents($stationsFile, $json);
         if ($result === false) {
-            $this->error("Failed to write {$outputFile}");
+            $this->error("Failed to write {$stationsFile}");
             return self::FAILURE;
         } else {
-            $this->info("Wrote {$result} bytes to {$outputFile}");
+            $this->info("Wrote {$result} bytes to {$stationsFile}");
         }
 
         $this->info('Generated stations.json with ' . count($stationsJson) . ' stations');
-        $this->info("Output file: {$outputFile}");
+        $this->info("Output file: {$stationsFile}");
 
         return self::SUCCESS;
     }

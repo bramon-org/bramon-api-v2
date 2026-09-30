@@ -1,0 +1,1591 @@
+{
+    "openapi": "3.0.0",
+    "info": {
+        "title": "BRAMON API",
+        "description": "API REST para acesso às capturas das estações do projeto BRAMON.\n\nTodas as rotas de listagem são servidas a partir de um índice pré-construído\n(`php artisan bramon:index`), portanto o custo de memória de cada requisição\né independente da quantidade de arquivos no disco. Se o índice não existir,\nas rotas retornam 503 com uma mensagem indicando o comando a executar.",
+        "contact": {
+            "name": "BRAMON",
+            "url": "https://bramonmeteor.org",
+            "email": "suporte@bramonmeteor.org"
+        },
+        "license": {
+            "name": "MIT",
+            "url": "https://opensource.org/licenses/MIT"
+        },
+        "version": "1.0.0"
+    },
+    "servers": [
+        {
+            "url": "/api/v1/public",
+            "description": "API pública v1 (caminho relativo ao host)"
+        }
+    ],
+    "paths": {
+        "/cache/invalidate": {
+            "post": {
+                "tags": [
+                    "Cache"
+                ],
+                "summary": "Invalida o índice em disco",
+                "description": "Limpa o cache de leitura e apaga o índice de capturas. Após esta chamada as rotas de listagem passam a devolver 503 até que `php artisan bramon:index` seja executado novamente. Esta rota não exige autenticação: qualquer cliente que alcance a API pode apagar o índice e derrubar as listagens.",
+                "operationId": "invalidateCache",
+                "responses": {
+                    "200": {
+                        "description": "Índice removido",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "required": [
+                                        "message"
+                                    ],
+                                    "properties": {
+                                        "message": {
+                                            "type": "string",
+                                            "example": "Cache invalidado. Execute \"php artisan bramon:index\" para reconstruir o índice."
+                                        }
+                                    },
+                                    "type": "object"
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        },
+        "/captures": {
+            "get": {
+                "tags": [
+                    "Captures"
+                ],
+                "summary": "Lista capturas",
+                "description": "Paginação por busca direta (seek) no índice, ordenada por captured_at descendente. Filtros por estação, intervalo de datas e presença de metadados ou preview são aplicados sobre o índice. O custo de memória de cada página é proporcional a per_page, não ao total de arquivos em disco.",
+                "operationId": "listCaptures",
+                "parameters": [
+                    {
+                        "$ref": "#/components/parameters/page"
+                    },
+                    {
+                        "$ref": "#/components/parameters/per_page"
+                    },
+                    {
+                        "$ref": "#/components/parameters/station"
+                    },
+                    {
+                        "$ref": "#/components/parameters/date_from"
+                    },
+                    {
+                        "$ref": "#/components/parameters/date_to"
+                    },
+                    {
+                        "$ref": "#/components/parameters/has_metadata"
+                    },
+                    {
+                        "$ref": "#/components/parameters/has_preview"
+                    },
+                    {
+                        "$ref": "#/components/parameters/use_cache"
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "Página de capturas retornada",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/PaginatedCaptures"
+                                }
+                            }
+                        }
+                    },
+                    "422": {
+                        "description": "Parâmetros de query inválidos",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/Error"
+                                }
+                            }
+                        }
+                    },
+                    "503": {
+                        "description": "Índice de capturas não construído",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/IndexNotReady"
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        },
+        "/captures/search": {
+            "get": {
+                "tags": [
+                    "Captures"
+                ],
+                "summary": "Busca capturas",
+                "description": "Busca livre por estação, identificador ou caminho nos arquivos. Os resultados são ordenados do mais recente para o mais antigo. Diferente das demais listagens, esta rota não é paginada: devolve apenas o recorte superior definido por limit.",
+                "operationId": "searchCaptures",
+                "parameters": [
+                    {
+                        "$ref": "#/components/parameters/q"
+                    },
+                    {
+                        "$ref": "#/components/parameters/limit"
+                    },
+                    {
+                        "$ref": "#/components/parameters/use_cache"
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "Resultados da busca",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/SearchResponse"
+                                }
+                            }
+                        }
+                    },
+                    "422": {
+                        "description": "Parâmetros de query inválidos ou q ausente",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/Error"
+                                }
+                            }
+                        }
+                    },
+                    "503": {
+                        "description": "Índice de capturas não construído",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/IndexNotReady"
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        },
+        "/captures/{captureId}": {
+            "get": {
+                "tags": [
+                    "Captures"
+                ],
+                "summary": "Detalha uma captura",
+                "description": "Devolve uma captura pelo seu identificador, com a lista de arquivos associados (metadados, preview, thumbnail).",
+                "operationId": "getCapture",
+                "parameters": [
+                    {
+                        "name": "captureId",
+                        "in": "path",
+                        "description": "Identificador da captura.",
+                        "required": true,
+                        "schema": {
+                            "type": "string",
+                            "example": "e99854fa685b4adf23084bc9200f0fcb"
+                        }
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "Captura encontrada",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/Capture"
+                                }
+                            }
+                        }
+                    },
+                    "404": {
+                        "description": "Captura não encontrada",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/Error"
+                                }
+                            }
+                        }
+                    },
+                    "503": {
+                        "description": "Índice de capturas não construído",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/IndexNotReady"
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        },
+        "/captures/{captureId}/files/{fileType}": {
+            "get": {
+                "tags": [
+                    "Captures"
+                ],
+                "summary": "Baixa um arquivo da captura",
+                "description": "Serve o arquivo binário associado à captura. O caminho resolvido é validado contra o diretório base antes de servir, de modo que travessia de diretório é rejeitada. Em caso de sucesso a resposta é binária; nos demais casos o corpo é JSON de erro.",
+                "operationId": "getCaptureFile",
+                "parameters": [
+                    {
+                        "name": "captureId",
+                        "in": "path",
+                        "description": "Identificador da captura.",
+                        "required": true,
+                        "schema": {
+                            "type": "string",
+                            "example": "e99854fa685b4adf23084bc9200f0fcb"
+                        }
+                    },
+                    {
+                        "name": "fileType",
+                        "in": "path",
+                        "description": "Tipo do arquivo a servir.",
+                        "required": true,
+                        "schema": {
+                            "type": "string",
+                            "example": "thumbnail",
+                            "enum": [
+                                "metadata",
+                                "preview",
+                                "thumbnail",
+                                "analyze"
+                            ]
+                        }
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "Conteúdo do arquivo, servido do disco com o nome no cabeçalho Content-Disposition. O Content-Type acompanha o arquivo, portanto a resposta 200 aparece abaixo com os dois tipos possíveis.",
+                        "content": {
+                            "image/jpeg": {
+                                "schema": {
+                                    "type": "string",
+                                    "format": "binary"
+                                }
+                            },
+                            "application/json": {
+                                "schema": {
+                                    "type": "string",
+                                    "format": "binary"
+                                }
+                            }
+                        }
+                    },
+                    "404": {
+                        "description": "Captura, arquivo ou caminho inexistente",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/Error"
+                                }
+                            }
+                        }
+                    },
+                    "503": {
+                        "description": "Índice de capturas não construído",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/IndexNotReady"
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        },
+        "/health": {
+            "get": {
+                "tags": [
+                    "Health"
+                ],
+                "summary": "Estado da API",
+                "description": "Informa se o diretório de dados existe, se o índice de capturas está construído e quanto de memória o processo consumiu. Retorna 503 quando o índice ou o diretório de dados não estão disponíveis.",
+                "operationId": "getHealth",
+                "responses": {
+                    "200": {
+                        "description": "API saudável",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/HealthResponse"
+                                }
+                            }
+                        }
+                    },
+                    "503": {
+                        "description": "API degradada: diretório de dados ou índice ausente",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/HealthResponse"
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        },
+        "/operators": {
+            "get": {
+                "tags": [
+                    "Operators"
+                ],
+                "summary": "Lista operadores",
+                "description": "Devolve os operadores paginados. Cada operador carrega a lista de estações sob sua responsabilidade. Construído a partir de operators.json cruzado com as estações do índice, sem varrer o disco de capturas.",
+                "operationId": "listOperators",
+                "parameters": [
+                    {
+                        "$ref": "#/components/parameters/page"
+                    },
+                    {
+                        "$ref": "#/components/parameters/per_page"
+                    },
+                    {
+                        "$ref": "#/components/parameters/active_only"
+                    },
+                    {
+                        "$ref": "#/components/parameters/use_cache"
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "Página de operadores retornada",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/PaginatedOperators"
+                                }
+                            }
+                        }
+                    },
+                    "422": {
+                        "description": "Parâmetros de query inválidos",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/Error"
+                                }
+                            }
+                        }
+                    },
+                    "503": {
+                        "description": "Índice de capturas não construído",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/IndexNotReady"
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        },
+        "/operators/{operatorId}": {
+            "get": {
+                "tags": [
+                    "Operators"
+                ],
+                "summary": "Detalha um operador",
+                "description": "Devolve um operador pelo seu identificador, com a lista de estações vinculadas.",
+                "operationId": "getOperator",
+                "parameters": [
+                    {
+                        "name": "operatorId",
+                        "in": "path",
+                        "description": "Identificador do operador.",
+                        "required": true,
+                        "schema": {
+                            "type": "string",
+                            "example": "TLP"
+                        }
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "Operador encontrado",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/Operator"
+                                }
+                            }
+                        }
+                    },
+                    "404": {
+                        "description": "Operador não encontrado",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/Error"
+                                }
+                            }
+                        }
+                    },
+                    "503": {
+                        "description": "Índice de capturas não construído",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/IndexNotReady"
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        },
+        "/stations": {
+            "get": {
+                "tags": [
+                    "Stations"
+                ],
+                "summary": "Lista estações",
+                "description": "Devolve as estações paginadas, ordenadas alfabeticamente por nome. Todos os campos vêm do manifesto do índice; nenhuma pasta de capturas é aberta.",
+                "operationId": "listStations",
+                "parameters": [
+                    {
+                        "$ref": "#/components/parameters/page"
+                    },
+                    {
+                        "$ref": "#/components/parameters/per_page"
+                    },
+                    {
+                        "$ref": "#/components/parameters/active_only"
+                    },
+                    {
+                        "$ref": "#/components/parameters/use_cache"
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "Página de estações retornada",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/PaginatedStations"
+                                }
+                            }
+                        }
+                    },
+                    "422": {
+                        "description": "Parâmetros de query inválidos",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/Error"
+                                }
+                            }
+                        }
+                    },
+                    "503": {
+                        "description": "Índice de capturas não construído",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/IndexNotReady"
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        },
+        "/stations/{stationName}": {
+            "get": {
+                "tags": [
+                    "Stations"
+                ],
+                "summary": "Detalha uma estação",
+                "description": "Devolve uma estação pelo seu código/nome, incluindo a contagem de capturas e a janela de atividade. Os metadados vêm de stations.json; apenas os agregados de captura vêm do índice.",
+                "operationId": "getStation",
+                "parameters": [
+                    {
+                        "name": "stationName",
+                        "in": "path",
+                        "description": "Código ou nome da estação.",
+                        "required": true,
+                        "schema": {
+                            "type": "string",
+                            "example": "STA07"
+                        }
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "Estação encontrada",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/Station"
+                                }
+                            }
+                        }
+                    },
+                    "404": {
+                        "description": "Estação não encontrada",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/Error"
+                                }
+                            }
+                        }
+                    },
+                    "503": {
+                        "description": "Índice de capturas não construído",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/IndexNotReady"
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        },
+        "/stations/{stationName}/captures": {
+            "get": {
+                "tags": [
+                    "Stations"
+                ],
+                "summary": "Lista capturas de uma estação",
+                "description": "Paginação por busca direta (seek) no índice: a página é lida deslocando o cursor para a posição correspondente, sem varrer o índice inteiro. As capturas vêm ordenadas por captured_at descendente.",
+                "operationId": "listStationCaptures",
+                "parameters": [
+                    {
+                        "name": "stationName",
+                        "in": "path",
+                        "description": "Código ou nome da estação.",
+                        "required": true,
+                        "schema": {
+                            "type": "string",
+                            "example": "STA07"
+                        }
+                    },
+                    {
+                        "$ref": "#/components/parameters/page"
+                    },
+                    {
+                        "$ref": "#/components/parameters/per_page"
+                    },
+                    {
+                        "$ref": "#/components/parameters/date_from"
+                    },
+                    {
+                        "$ref": "#/components/parameters/date_to"
+                    },
+                    {
+                        "$ref": "#/components/parameters/use_cache"
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "Página de capturas da estação",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/PaginatedCaptures"
+                                }
+                            }
+                        }
+                    },
+                    "404": {
+                        "description": "Estação não encontrada",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/Error"
+                                }
+                            }
+                        }
+                    },
+                    "422": {
+                        "description": "Parâmetros de query inválidos",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/Error"
+                                }
+                            }
+                        }
+                    },
+                    "503": {
+                        "description": "Índice de capturas não construído",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/IndexNotReady"
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        },
+        "/stations/{stationName}/stats": {
+            "get": {
+                "tags": [
+                    "Stations"
+                ],
+                "summary": "Estatísticas de uma estação",
+                "description": "Total de capturas, primeira e última captura e a distribuição mensal. Todos os valores já estão pré-computados no manifesto do índice.",
+                "operationId": "getStationStats",
+                "parameters": [
+                    {
+                        "name": "stationName",
+                        "in": "path",
+                        "description": "Código ou nome da estação.",
+                        "required": true,
+                        "schema": {
+                            "type": "string",
+                            "example": "STA07"
+                        }
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "Estatísticas da estação",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/StationStats"
+                                }
+                            }
+                        }
+                    },
+                    "404": {
+                        "description": "Estação não encontrada",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/Error"
+                                }
+                            }
+                        }
+                    },
+                    "503": {
+                        "description": "Índice de capturas não construído",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/IndexNotReady"
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        },
+        "/stats": {
+            "get": {
+                "tags": [
+                    "Statistics"
+                ],
+                "summary": "Estatísticas agregadas",
+                "description": "Totais de capturas, arquivos, estações e operadores, intervalo de datas coberto, distribuição por estação e por mês, e a data de geração do índice. Todos os valores vêm do manifesto do índice, sem varrer o disco.",
+                "operationId": "getStats",
+                "responses": {
+                    "200": {
+                        "description": "Estatísticas retornadas",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/StatsResponse"
+                                }
+                            }
+                        }
+                    },
+                    "503": {
+                        "description": "Índice de capturas não construído",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/IndexNotReady"
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    },
+    "components": {
+        "schemas": {
+            "Error": {
+                "description": "Formato de erro padrão da API.",
+                "required": [
+                    "detail"
+                ],
+                "properties": {
+                    "detail": {
+                        "description": "Mensagem legível do erro.",
+                        "type": "string",
+                        "example": "Estação não encontrada"
+                    },
+                    "errors": {
+                        "description": "Presente apenas em falhas de validação (HTTP 422). Mapeia o nome do campo para a lista de mensagens.",
+                        "type": "object",
+                        "example": {
+                            "per_page": [
+                                "O campo per page não pode ser maior que 100."
+                            ]
+                        },
+                        "nullable": true,
+                        "additionalProperties": {
+                            "type": "array",
+                            "items": {
+                                "type": "string"
+                            }
+                        }
+                    }
+                },
+                "type": "object"
+            },
+            "IndexNotReady": {
+                "description": "Resposta 503 emitida enquanto o índice de capturas não foi construído. As rotas de listagem devolvem este corpo em vez de varrer o disco, o que estouraria o limite de memória do servidor.",
+                "required": [
+                    "detail"
+                ],
+                "properties": {
+                    "detail": {
+                        "type": "string",
+                        "example": "Índice de capturas não construído. Execute: php artisan bramon:index"
+                    }
+                },
+                "type": "object"
+            },
+            "IndexStatus": {
+                "description": "Estado do índice de capturas em disco.",
+                "required": [
+                    "built",
+                    "total_captures",
+                    "total_stations",
+                    "disk_usage"
+                ],
+                "properties": {
+                    "built": {
+                        "description": "Indica se o índice está disponível.",
+                        "type": "boolean",
+                        "example": true
+                    },
+                    "generated_at": {
+                        "type": "string",
+                        "format": "date-time",
+                        "example": "2026-09-30T03:30:47+00:00",
+                        "nullable": true
+                    },
+                    "total_captures": {
+                        "type": "integer",
+                        "example": 12051
+                    },
+                    "total_stations": {
+                        "type": "integer",
+                        "example": 40
+                    },
+                    "disk_usage": {
+                        "description": "Tamanho do índice em bytes.",
+                        "type": "integer",
+                        "example": 11333890
+                    }
+                },
+                "type": "object"
+            },
+            "MemoryStatus": {
+                "description": "Consumo de memória do processo que atendeu a requisição, em bytes.",
+                "required": [
+                    "current",
+                    "peak"
+                ],
+                "properties": {
+                    "current": {
+                        "type": "integer",
+                        "example": 8388608
+                    },
+                    "peak": {
+                        "type": "integer",
+                        "example": 8388608
+                    },
+                    "limit": {
+                        "description": "memory_limit em bytes; null quando ilimitado.",
+                        "type": "integer",
+                        "example": 67108864,
+                        "nullable": true
+                    }
+                },
+                "type": "object"
+            },
+            "HealthResponse": {
+                "required": [
+                    "status",
+                    "timestamp",
+                    "base_dir",
+                    "base_dir_exists",
+                    "index",
+                    "memory"
+                ],
+                "properties": {
+                    "status": {
+                        "type": "string",
+                        "example": "healthy",
+                        "enum": [
+                            "healthy",
+                            "degraded"
+                        ]
+                    },
+                    "timestamp": {
+                        "type": "string",
+                        "format": "date-time",
+                        "example": "2026-09-30T03:30:47+00:00"
+                    },
+                    "base_dir": {
+                        "type": "string",
+                        "example": "/mnt/dados/BRAMON"
+                    },
+                    "base_dir_exists": {
+                        "type": "boolean",
+                        "example": true
+                    },
+                    "index": {
+                        "description": "Estado do índice de capturas.",
+                        "allOf": [
+                            {
+                                "$ref": "#/components/schemas/IndexStatus"
+                            }
+                        ]
+                    },
+                    "memory": {
+                        "description": "Consumo de memória do processo.",
+                        "allOf": [
+                            {
+                                "$ref": "#/components/schemas/MemoryStatus"
+                            }
+                        ]
+                    },
+                    "hint": {
+                        "description": "Presente apenas quando status é degraded, indicando a ação necessária.",
+                        "type": "string",
+                        "example": "Índice não construído. Execute: php artisan bramon:index",
+                        "nullable": true
+                    }
+                },
+                "type": "object"
+            },
+            "PaginatedCaptures": {
+                "description": "Envelope paginado de capturas, ordenadas por captured_at descendente.",
+                "required": [
+                    "data",
+                    "total",
+                    "page",
+                    "per_page",
+                    "total_pages",
+                    "has_next",
+                    "has_prev"
+                ],
+                "properties": {
+                    "data": {
+                        "description": "Capturas da página atual.",
+                        "type": "array",
+                        "items": {
+                            "$ref": "#/components/schemas/Capture"
+                        }
+                    },
+                    "total": {
+                        "description": "Total de capturas que atendem ao filtro.",
+                        "type": "integer",
+                        "example": 12051
+                    },
+                    "page": {
+                        "description": "Página atual, base 1.",
+                        "type": "integer",
+                        "example": 1
+                    },
+                    "per_page": {
+                        "type": "integer",
+                        "example": 15
+                    },
+                    "total_pages": {
+                        "type": "integer",
+                        "example": 804
+                    },
+                    "has_next": {
+                        "type": "boolean",
+                        "example": true
+                    },
+                    "has_prev": {
+                        "type": "boolean",
+                        "example": false
+                    }
+                },
+                "type": "object"
+            },
+            "PaginatedStations": {
+                "description": "Envelope paginado de estações.",
+                "required": [
+                    "data",
+                    "total",
+                    "page",
+                    "per_page",
+                    "total_pages",
+                    "has_next",
+                    "has_prev"
+                ],
+                "properties": {
+                    "data": {
+                        "description": "Estações da página atual.",
+                        "type": "array",
+                        "items": {
+                            "$ref": "#/components/schemas/Station"
+                        }
+                    },
+                    "total": {
+                        "description": "Total de estações que atendem ao filtro.",
+                        "type": "integer",
+                        "example": 40
+                    },
+                    "page": {
+                        "description": "Página atual, base 1.",
+                        "type": "integer",
+                        "example": 1
+                    },
+                    "per_page": {
+                        "type": "integer",
+                        "example": 15
+                    },
+                    "total_pages": {
+                        "type": "integer",
+                        "example": 3
+                    },
+                    "has_next": {
+                        "type": "boolean",
+                        "example": true
+                    },
+                    "has_prev": {
+                        "type": "boolean",
+                        "example": false
+                    }
+                },
+                "type": "object"
+            },
+            "PaginatedOperators": {
+                "description": "Envelope paginado de operadores.",
+                "required": [
+                    "data",
+                    "total",
+                    "page",
+                    "per_page",
+                    "total_pages",
+                    "has_next",
+                    "has_prev"
+                ],
+                "properties": {
+                    "data": {
+                        "description": "Operadores da página atual.",
+                        "type": "array",
+                        "items": {
+                            "$ref": "#/components/schemas/Operator"
+                        }
+                    },
+                    "total": {
+                        "description": "Total de operadores que atendem ao filtro.",
+                        "type": "integer",
+                        "example": 1
+                    },
+                    "page": {
+                        "description": "Página atual, base 1.",
+                        "type": "integer",
+                        "example": 1
+                    },
+                    "per_page": {
+                        "type": "integer",
+                        "example": 15
+                    },
+                    "total_pages": {
+                        "type": "integer",
+                        "example": 1
+                    },
+                    "has_next": {
+                        "type": "boolean",
+                        "example": false
+                    },
+                    "has_prev": {
+                        "type": "boolean",
+                        "example": false
+                    }
+                },
+                "type": "object"
+            },
+            "CaptureFile": {
+                "description": "Um arquivo associado a uma captura.",
+                "required": [
+                    "url",
+                    "type",
+                    "filename",
+                    "extension"
+                ],
+                "properties": {
+                    "url": {
+                        "description": "Caminho relativo ao diretório base de dados.",
+                        "type": "string",
+                        "example": "STA32/2026/202609/20260930/M20260930_235120_STA32_1T.jpg"
+                    },
+                    "type": {
+                        "type": "string",
+                        "example": "thumbnail",
+                        "enum": [
+                            "metadata",
+                            "preview",
+                            "thumbnail",
+                            "analyze"
+                        ]
+                    },
+                    "filename": {
+                        "type": "string",
+                        "example": "M20260930_235120_STA32_1T.jpg"
+                    },
+                    "extension": {
+                        "type": "string",
+                        "example": "jpg"
+                    },
+                    "size": {
+                        "type": "integer",
+                        "example": 4143,
+                        "nullable": true
+                    },
+                    "modified_at": {
+                        "type": "string",
+                        "format": "date-time",
+                        "nullable": true
+                    }
+                },
+                "type": "object"
+            },
+            "Capture": {
+                "required": [
+                    "id",
+                    "station",
+                    "captured_at",
+                    "capture_date",
+                    "capture_time",
+                    "files",
+                    "file_count"
+                ],
+                "properties": {
+                    "id": {
+                        "description": "md5 truncado de station_date_time.",
+                        "type": "string",
+                        "example": "e99854fa685b4adf23084bc9200f0fcb"
+                    },
+                    "station": {
+                        "type": "string",
+                        "example": "STA32"
+                    },
+                    "captured_at": {
+                        "type": "string",
+                        "example": "2026-09-30 23:51:20"
+                    },
+                    "capture_date": {
+                        "type": "string",
+                        "example": "20260930"
+                    },
+                    "capture_time": {
+                        "type": "string",
+                        "example": "235120"
+                    },
+                    "files": {
+                        "description": "Arquivos associados à captura.",
+                        "type": "array",
+                        "items": {
+                            "$ref": "#/components/schemas/CaptureFile"
+                        }
+                    },
+                    "file_count": {
+                        "type": "integer",
+                        "example": 3
+                    },
+                    "has_metadata": {
+                        "type": "boolean",
+                        "example": true
+                    },
+                    "has_preview": {
+                        "type": "boolean",
+                        "example": true
+                    },
+                    "has_thumbnail": {
+                        "type": "boolean",
+                        "example": true
+                    }
+                },
+                "type": "object"
+            },
+            "Station": {
+                "required": [
+                    "id",
+                    "name",
+                    "country",
+                    "active",
+                    "visible",
+                    "capture_count"
+                ],
+                "properties": {
+                    "id": {
+                        "description": "md5 do nome da estação.",
+                        "type": "string",
+                        "example": "d15605f23fa41195af8ca4626d43ef5e"
+                    },
+                    "name": {
+                        "type": "string",
+                        "example": "STA01"
+                    },
+                    "operador": {
+                        "type": "string",
+                        "example": "THIAGO_PAES",
+                        "nullable": true
+                    },
+                    "city": {
+                        "type": "string",
+                        "example": "São Paulo"
+                    },
+                    "state": {
+                        "type": "string",
+                        "example": "SP"
+                    },
+                    "country": {
+                        "type": "string",
+                        "example": "BR"
+                    },
+                    "latitude": {
+                        "type": "number",
+                        "format": "double",
+                        "example": -23.5505
+                    },
+                    "longitude": {
+                        "type": "number",
+                        "format": "double",
+                        "example": -46.6333
+                    },
+                    "azimuth": {
+                        "type": "number",
+                        "format": "double",
+                        "example": 180
+                    },
+                    "elevation": {
+                        "type": "number",
+                        "format": "double",
+                        "example": 760
+                    },
+                    "fov": {
+                        "type": "number",
+                        "format": "double",
+                        "example": 60
+                    },
+                    "camera_model": {
+                        "type": "string",
+                        "example": "Canon EOS"
+                    },
+                    "camera_lens": {
+                        "type": "string",
+                        "example": "Wide Angle"
+                    },
+                    "camera_capture": {
+                        "type": "string",
+                        "example": "Unknown"
+                    },
+                    "active": {
+                        "type": "boolean",
+                        "example": true
+                    },
+                    "visible": {
+                        "type": "boolean",
+                        "example": true
+                    },
+                    "capture_count": {
+                        "description": "Total de capturas, servido a partir do índice.",
+                        "type": "integer",
+                        "example": 307
+                    },
+                    "first_capture": {
+                        "type": "string",
+                        "example": "2026-06-02 05:51:06",
+                        "nullable": true
+                    },
+                    "last_capture": {
+                        "type": "string",
+                        "example": "2026-09-30 08:44:23",
+                        "nullable": true
+                    }
+                },
+                "type": "object"
+            },
+            "Operator": {
+                "required": [
+                    "id",
+                    "name",
+                    "email",
+                    "role",
+                    "visible",
+                    "active",
+                    "station_count",
+                    "stations"
+                ],
+                "properties": {
+                    "id": {
+                        "type": "string",
+                        "example": "TLP"
+                    },
+                    "name": {
+                        "type": "string",
+                        "example": "THIAGO_PAES"
+                    },
+                    "email": {
+                        "type": "string",
+                        "format": "email",
+                        "example": "thiago.paes@bramonmeteor.org"
+                    },
+                    "role": {
+                        "type": "string",
+                        "example": "operator"
+                    },
+                    "visible": {
+                        "type": "boolean",
+                        "example": true
+                    },
+                    "active": {
+                        "type": "boolean",
+                        "example": true
+                    },
+                    "station_count": {
+                        "type": "integer",
+                        "example": 10
+                    },
+                    "stations": {
+                        "description": "Códigos das estações sob responsabilidade do operador.",
+                        "type": "array",
+                        "items": {
+                            "type": "string"
+                        },
+                        "example": [
+                            "TLP1",
+                            "TLP2"
+                        ]
+                    }
+                },
+                "type": "object"
+            },
+            "StationStats": {
+                "description": "Estatísticas de uma estação, derivadas dos agregados do índice.",
+                "required": [
+                    "station",
+                    "total_captures"
+                ],
+                "properties": {
+                    "station": {
+                        "type": "string",
+                        "example": "STA07"
+                    },
+                    "total_captures": {
+                        "type": "integer",
+                        "example": 266
+                    },
+                    "first_capture": {
+                        "type": "string",
+                        "example": "2026-06-03 00:08:54",
+                        "nullable": true
+                    },
+                    "last_capture": {
+                        "type": "string",
+                        "example": "2026-09-29 17:09:04",
+                        "nullable": true
+                    },
+                    "captures_by_month": {
+                        "description": "Total de capturas por mês, no formato AAAAMM.",
+                        "type": "object",
+                        "example": {
+                            "202606": 90,
+                            "202607": 90,
+                            "202608": 86
+                        },
+                        "additionalProperties": {
+                            "type": "integer"
+                        }
+                    }
+                },
+                "type": "object"
+            },
+            "DateRange": {
+                "description": "Intervalo de datas coberto pelo índice.",
+                "properties": {
+                    "earliest": {
+                        "description": "Schemas for the statistics and search endpoints.",
+                        "type": "string",
+                        "example": "2026-06-02 00:04:13",
+                        "nullable": true
+                    },
+                    "latest": {
+                        "type": "string",
+                        "example": "2026-09-30 23:51:20",
+                        "nullable": true
+                    }
+                },
+                "type": "object"
+            },
+            "StatsResponse": {
+                "required": [
+                    "total_captures",
+                    "total_stations",
+                    "total_operators",
+                    "total_files",
+                    "date_range",
+                    "captures_by_station",
+                    "captures_by_month",
+                    "last_updated"
+                ],
+                "properties": {
+                    "total_captures": {
+                        "type": "integer",
+                        "example": 12051
+                    },
+                    "total_stations": {
+                        "type": "integer",
+                        "example": 40
+                    },
+                    "total_operators": {
+                        "type": "integer",
+                        "example": 1
+                    },
+                    "total_files": {
+                        "type": "integer",
+                        "example": 36153
+                    },
+                    "date_range": {
+                        "description": "Intervalo de datas coberto pelo índice.",
+                        "allOf": [
+                            {
+                                "$ref": "#/components/schemas/DateRange"
+                            }
+                        ]
+                    },
+                    "captures_by_station": {
+                        "description": "Total de capturas por estação.",
+                        "type": "object",
+                        "example": {
+                            "STA01": 307,
+                            "STA02": 298
+                        },
+                        "additionalProperties": {
+                            "type": "integer"
+                        }
+                    },
+                    "captures_by_month": {
+                        "description": "Total de capturas por mês, no formato AAAAMM.",
+                        "type": "object",
+                        "example": {
+                            "202606": 120,
+                            "202607": 310
+                        },
+                        "additionalProperties": {
+                            "type": "integer"
+                        }
+                    },
+                    "last_updated": {
+                        "description": "Data de geração do índice.",
+                        "type": "string",
+                        "format": "date-time",
+                        "example": "2026-09-30T03:30:47+00:00"
+                    }
+                },
+                "type": "object"
+            },
+            "SearchResponse": {
+                "description": "Resultado da busca de capturas. Ao contrário das listagens, esta rota não é paginada: devolve apenas o recorte superior.",
+                "required": [
+                    "query",
+                    "total",
+                    "results"
+                ],
+                "properties": {
+                    "query": {
+                        "type": "string",
+                        "example": "STA07"
+                    },
+                    "total": {
+                        "type": "integer",
+                        "example": 266
+                    },
+                    "results": {
+                        "type": "array",
+                        "items": {
+                            "$ref": "#/components/schemas/Capture"
+                        }
+                    }
+                },
+                "type": "object"
+            }
+        },
+        "parameters": {
+            "page": {
+                "name": "page",
+                "in": "query",
+                "description": "Página, base 1.",
+                "required": false,
+                "schema": {
+                    "type": "integer",
+                    "example": 1,
+                    "default": 1,
+                    "minimum": 1
+                }
+            },
+            "per_page": {
+                "name": "per_page",
+                "in": "query",
+                "description": "Itens por página. Máximo aceito: 100; acima disso a requisição é rejeitada com 422.",
+                "required": false,
+                "schema": {
+                    "type": "integer",
+                    "example": 15,
+                    "default": 15,
+                    "maximum": 100,
+                    "minimum": 1
+                }
+            },
+            "active_only": {
+                "name": "active_only",
+                "in": "query",
+                "description": "Quando verdadeiro, devolve somente itens marcados como ativos.",
+                "required": false,
+                "schema": {
+                    "type": "boolean",
+                    "example": false,
+                    "default": false
+                }
+            },
+            "station": {
+                "name": "station",
+                "in": "query",
+                "description": "Filtra capturas pelo código da estação (comparação exata).",
+                "required": false,
+                "schema": {
+                    "type": "string",
+                    "example": "STA07",
+                    "maxLength": 50
+                }
+            },
+            "date_from": {
+                "name": "date_from",
+                "in": "query",
+                "description": "Capturas com data igual ou posterior a este valor (inclusive).",
+                "required": false,
+                "schema": {
+                    "type": "string",
+                    "format": "date",
+                    "example": "2026-09-01"
+                }
+            },
+            "date_to": {
+                "name": "date_to",
+                "in": "query",
+                "description": "Capturas com data igual ou anterior a este valor (inclusive).",
+                "required": false,
+                "schema": {
+                    "type": "string",
+                    "format": "date",
+                    "example": "2026-09-30"
+                }
+            },
+            "has_metadata": {
+                "name": "has_metadata",
+                "in": "query",
+                "description": "Filtra capturas que possuem (ou não) arquivo de metadados.",
+                "required": false,
+                "schema": {
+                    "type": "boolean",
+                    "example": true
+                }
+            },
+            "has_preview": {
+                "name": "has_preview",
+                "in": "query",
+                "description": "Filtra capturas que possuem (ou não) imagem de preview.",
+                "required": false,
+                "schema": {
+                    "type": "boolean",
+                    "example": true
+                }
+            },
+            "use_cache": {
+                "name": "use_cache",
+                "in": "query",
+                "description": "Reservado para cache de resposta; hoje a listagem já é servida do índice em disco.",
+                "required": false,
+                "schema": {
+                    "type": "boolean",
+                    "example": true,
+                    "default": true
+                }
+            },
+            "limit": {
+                "name": "limit",
+                "in": "query",
+                "description": "Número máximo de resultados da busca. Máximo aceito: 200.",
+                "required": false,
+                "schema": {
+                    "type": "integer",
+                    "example": 50,
+                    "default": 50,
+                    "maximum": 200,
+                    "minimum": 1
+                }
+            },
+            "q": {
+                "name": "q",
+                "in": "query",
+                "description": "Termo de busca livre (estação, identificador ou caminho).",
+                "required": true,
+                "schema": {
+                    "type": "string",
+                    "example": "STA07",
+                    "maxLength": 200,
+                    "minLength": 1
+                }
+            }
+        }
+    },
+    "tags": [
+        {
+            "name": "Health",
+            "description": "Estado da API, do diretório de dados e do índice de capturas"
+        },
+        {
+            "name": "Captures",
+            "description": "Capturas e seus arquivos associados (metadados, preview, thumbnail)"
+        },
+        {
+            "name": "Stations",
+            "description": "Estações meteorológicas, suas capturas e estatísticas"
+        },
+        {
+            "name": "Operators",
+            "description": "Operadores e as estações sob sua responsabilidade"
+        },
+        {
+            "name": "Statistics",
+            "description": "Estatísticas agregadas de capturas, estações e operadores"
+        },
+        {
+            "name": "Cache",
+            "description": "Invalidação do índice de capturas em disco"
+        }
+    ]
+}

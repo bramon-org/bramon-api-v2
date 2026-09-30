@@ -24,3 +24,10 @@ capturas
 
 # Generated capture index (rebuild with: php artisan bramon:index)
 /storage/app/bramon
+
+# Per-environment package manifest; regenerate with composer install
+/bootstrap/cache/packages.php
+/bootstrap/cache/services.php
+
+# Compiled Blade templates
+/storage/framework/views/*.php

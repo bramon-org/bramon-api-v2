@@ -8,6 +8,7 @@ use App\Http\Resources\Api\V1\Public\StatsResource;
 use App\Services\CaptureIndex;
 use App\Services\DataProcessor;
 use Illuminate\Http\JsonResponse;
+use OpenApi\Attributes as OA;
 
 /**
  * Aggregate statistics.
@@ -22,6 +23,25 @@ class StatsController extends Controller
         protected CaptureIndex $index
     ) {}
 
+    #[OA\Get(
+        path: '/stats',
+        tags: ['Statistics'],
+        summary: 'Estatísticas agregadas',
+        description: 'Totais de capturas, arquivos, estações e operadores, intervalo de datas coberto, distribuição por estação e por mês, e a data de geração do índice. Todos os valores vêm do manifesto do índice, sem varrer o disco.',
+        operationId: 'getStats',
+        responses: [
+            new OA\Response(
+                response: 200,
+                description: 'Estatísticas retornadas',
+                content: new OA\JsonContent(ref: '#/components/schemas/StatsResponse'),
+            ),
+            new OA\Response(
+                response: 503,
+                description: 'Índice de capturas não construído',
+                content: new OA\JsonContent(ref: '#/components/schemas/IndexNotReady'),
+            ),
+        ],
+    )]
     public function __invoke(StatsRequest $request): JsonResponse
     {
         if (!$this->index->exists()) {

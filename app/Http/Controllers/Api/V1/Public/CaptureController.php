@@ -10,6 +10,7 @@ use App\Http\Resources\Api\V1\Public\PaginatedResource;
 use App\Services\CaptureIndex;
 use App\Services\FileSystemReader;
 use Illuminate\Http\JsonResponse;
+use OpenApi\Attributes as OA;
 use Symfony\Component\HttpFoundation\Response;
 
 /**
@@ -28,6 +29,40 @@ class CaptureController extends Controller
     /**
      * List captures with pagination and filters.
      */
+    #[OA\Get(
+        path: '/captures',
+        tags: ['Captures'],
+        summary: 'Lista capturas',
+        description: 'Paginação por busca direta (seek) no índice, ordenada por captured_at descendente. Filtros por estação, intervalo de datas e presença de metadados ou preview são aplicados sobre o índice. O custo de memória de cada página é proporcional a per_page, não ao total de arquivos em disco.',
+        operationId: 'listCaptures',
+        parameters: [
+            new OA\Parameter(ref: '#/components/parameters/page'),
+            new OA\Parameter(ref: '#/components/parameters/per_page'),
+            new OA\Parameter(ref: '#/components/parameters/station'),
+            new OA\Parameter(ref: '#/components/parameters/date_from'),
+            new OA\Parameter(ref: '#/components/parameters/date_to'),
+            new OA\Parameter(ref: '#/components/parameters/has_metadata'),
+            new OA\Parameter(ref: '#/components/parameters/has_preview'),
+            new OA\Parameter(ref: '#/components/parameters/use_cache'),
+        ],
+        responses: [
+            new OA\Response(
+                response: 200,
+                description: 'Página de capturas retornada',
+                content: new OA\JsonContent(ref: '#/components/schemas/PaginatedCaptures'),
+            ),
+            new OA\Response(
+                response: 422,
+                description: 'Parâmetros de query inválidos',
+                content: new OA\JsonContent(ref: '#/components/schemas/Error'),
+            ),
+            new OA\Response(
+                response: 503,
+                description: 'Índice de capturas não construído',
+                content: new OA\JsonContent(ref: '#/components/schemas/IndexNotReady'),
+            ),
+        ],
+    )]
     public function index(CaptureListRequest $request): JsonResponse
     {
         if (!$this->index->exists()) {
@@ -58,6 +93,35 @@ class CaptureController extends Controller
     /**
      * Search captures by term.
      */
+    #[OA\Get(
+        path: '/captures/search',
+        tags: ['Captures'],
+        summary: 'Busca capturas',
+        description: 'Busca livre por estação, identificador ou caminho nos arquivos. Os resultados são ordenados do mais recente para o mais antigo. Diferente das demais listagens, esta rota não é paginada: devolve apenas o recorte superior definido por limit.',
+        operationId: 'searchCaptures',
+        parameters: [
+            new OA\Parameter(ref: '#/components/parameters/q'),
+            new OA\Parameter(ref: '#/components/parameters/limit'),
+            new OA\Parameter(ref: '#/components/parameters/use_cache'),
+        ],
+        responses: [
+            new OA\Response(
+                response: 200,
+                description: 'Resultados da busca',
+                content: new OA\JsonContent(ref: '#/components/schemas/SearchResponse'),
+            ),
+            new OA\Response(
+                response: 422,
+                description: 'Parâmetros de query inválidos ou q ausente',
+                content: new OA\JsonContent(ref: '#/components/schemas/Error'),
+            ),
+            new OA\Response(
+                response: 503,
+                description: 'Índice de capturas não construído',
+                content: new OA\JsonContent(ref: '#/components/schemas/IndexNotReady'),
+            ),
+        ],
+    )]
     public function search(CaptureSearchRequest $request): JsonResponse
     {
         if (!$this->index->exists()) {
@@ -80,6 +144,39 @@ class CaptureController extends Controller
     /**
      * Get a specific capture by ID.
      */
+    #[OA\Get(
+        path: '/captures/{captureId}',
+        tags: ['Captures'],
+        summary: 'Detalha uma captura',
+        description: 'Devolve uma captura pelo seu identificador, com a lista de arquivos associados (metadados, preview, thumbnail).',
+        operationId: 'getCapture',
+        parameters: [
+            new OA\Parameter(
+                name: 'captureId',
+                in: 'path',
+                required: true,
+                description: 'Identificador da captura.',
+                schema: new OA\Schema(type: 'string', example: 'e99854fa685b4adf23084bc9200f0fcb'),
+            ),
+        ],
+        responses: [
+            new OA\Response(
+                response: 200,
+                description: 'Captura encontrada',
+                content: new OA\JsonContent(ref: '#/components/schemas/Capture'),
+            ),
+            new OA\Response(
+                response: 404,
+                description: 'Captura não encontrada',
+                content: new OA\JsonContent(ref: '#/components/schemas/Error'),
+            ),
+            new OA\Response(
+                response: 503,
+                description: 'Índice de capturas não construído',
+                content: new OA\JsonContent(ref: '#/components/schemas/IndexNotReady'),
+            ),
+        ],
+    )]
     public function show(string $captureId): JsonResponse
     {
         if (!$this->index->exists()) {
@@ -101,6 +198,59 @@ class CaptureController extends Controller
      * Returns a BinaryFileResponse on success, so the declared type is the
      * Symfony response base class rather than JsonResponse.
      */
+    #[OA\Get(
+        path: '/captures/{captureId}/files/{fileType}',
+        tags: ['Captures'],
+        summary: 'Baixa um arquivo da captura',
+        description: 'Serve o arquivo binário associado à captura. O caminho resolvido é validado contra o diretório base antes de servir, de modo que travessia de diretório é rejeitada. Em caso de sucesso a resposta é binária; nos demais casos o corpo é JSON de erro.',
+        operationId: 'getCaptureFile',
+        parameters: [
+            new OA\Parameter(
+                name: 'captureId',
+                in: 'path',
+                required: true,
+                description: 'Identificador da captura.',
+                schema: new OA\Schema(type: 'string', example: 'e99854fa685b4adf23084bc9200f0fcb'),
+            ),
+            new OA\Parameter(
+                name: 'fileType',
+                in: 'path',
+                required: true,
+                description: 'Tipo do arquivo a servir.',
+                schema: new OA\Schema(
+                    type: 'string',
+                    enum: ['metadata', 'preview', 'thumbnail', 'analyze'],
+                    example: 'thumbnail',
+                ),
+            ),
+        ],
+        responses: [
+            new OA\Response(
+                response: 200,
+                description: 'Conteúdo do arquivo, servido do disco com o nome no cabeçalho Content-Disposition. O Content-Type acompanha o arquivo, portanto a resposta 200 aparece abaixo com os dois tipos possíveis.',
+                content: [
+                    new OA\MediaType(
+                        mediaType: 'image/jpeg',
+                        schema: new OA\Schema(type: 'string', format: 'binary'),
+                    ),
+                    new OA\MediaType(
+                        mediaType: 'application/json',
+                        schema: new OA\Schema(type: 'string', format: 'binary'),
+                    ),
+                ],
+            ),
+            new OA\Response(
+                response: 404,
+                description: 'Captura, arquivo ou caminho inexistente',
+                content: new OA\JsonContent(ref: '#/components/schemas/Error'),
+            ),
+            new OA\Response(
+                response: 503,
+                description: 'Índice de capturas não construído',
+                content: new OA\JsonContent(ref: '#/components/schemas/IndexNotReady'),
+            ),
+        ],
+    )]
     public function file(string $captureId, string $fileType): Response
     {
         if (!$this->index->exists()) {

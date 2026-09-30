@@ -9,6 +9,7 @@ use App\Http\Resources\Api\V1\Public\PaginatedResource;
 use App\Services\CaptureIndex;
 use App\Services\DataProcessor;
 use Illuminate\Http\JsonResponse;
+use OpenApi\Attributes as OA;
 
 /**
  * Operator endpoints.
@@ -27,6 +28,36 @@ class OperatorController extends Controller
     /**
      * List operators with pagination.
      */
+    #[OA\Get(
+        path: '/operators',
+        tags: ['Operators'],
+        summary: 'Lista operadores',
+        description: 'Devolve os operadores paginados. Cada operador carrega a lista de estações sob sua responsabilidade. Construído a partir de operators.json cruzado com as estações do índice, sem varrer o disco de capturas.',
+        operationId: 'listOperators',
+        parameters: [
+            new OA\Parameter(ref: '#/components/parameters/page'),
+            new OA\Parameter(ref: '#/components/parameters/per_page'),
+            new OA\Parameter(ref: '#/components/parameters/active_only'),
+            new OA\Parameter(ref: '#/components/parameters/use_cache'),
+        ],
+        responses: [
+            new OA\Response(
+                response: 200,
+                description: 'Página de operadores retornada',
+                content: new OA\JsonContent(ref: '#/components/schemas/PaginatedOperators'),
+            ),
+            new OA\Response(
+                response: 422,
+                description: 'Parâmetros de query inválidos',
+                content: new OA\JsonContent(ref: '#/components/schemas/Error'),
+            ),
+            new OA\Response(
+                response: 503,
+                description: 'Índice de capturas não construído',
+                content: new OA\JsonContent(ref: '#/components/schemas/IndexNotReady'),
+            ),
+        ],
+    )]
     public function index(OperatorListRequest $request): JsonResponse
     {
         if (!$this->index->exists()) {
@@ -66,6 +97,39 @@ class OperatorController extends Controller
     /**
      * Get a specific operator by ID.
      */
+    #[OA\Get(
+        path: '/operators/{operatorId}',
+        tags: ['Operators'],
+        summary: 'Detalha um operador',
+        description: 'Devolve um operador pelo seu identificador, com a lista de estações vinculadas.',
+        operationId: 'getOperator',
+        parameters: [
+            new OA\Parameter(
+                name: 'operatorId',
+                in: 'path',
+                required: true,
+                description: 'Identificador do operador.',
+                schema: new OA\Schema(type: 'string', example: 'TLP'),
+            ),
+        ],
+        responses: [
+            new OA\Response(
+                response: 200,
+                description: 'Operador encontrado',
+                content: new OA\JsonContent(ref: '#/components/schemas/Operator'),
+            ),
+            new OA\Response(
+                response: 404,
+                description: 'Operador não encontrado',
+                content: new OA\JsonContent(ref: '#/components/schemas/Error'),
+            ),
+            new OA\Response(
+                response: 503,
+                description: 'Índice de capturas não construído',
+                content: new OA\JsonContent(ref: '#/components/schemas/IndexNotReady'),
+            ),
+        ],
+    )]
     public function show(string $operatorId): JsonResponse
     {
         if (!$this->index->exists()) {

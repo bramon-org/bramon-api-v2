@@ -207,6 +207,10 @@ class OperatorsScan extends Command
             }
 
             $nome = $info['observer'] ?? $info['lid'] ?? 'Operador Desconhecido';
+            // Normalize the name to UTF-8, remove invalid characters
+            $nome = mb_convert_encoding($nome, 'UTF-8', 'UTF-8');
+            $nome = preg_replace('/[\x00-\x1F\x7F]/u', '', $nome);
+            $nome = trim($nome);
             // No capture carries an address, so it is derived from the name —
             // the same rule the indexer uses, to keep both in sync.
             $email = OperatorReader::emailFromName($nome);

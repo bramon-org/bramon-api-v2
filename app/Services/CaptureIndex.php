@@ -1014,6 +1014,12 @@ class CaptureIndex
         ];
 
         $this->retryFilePutContents($this->pathIn($stagingDir, 'manifest.json'), json_encode($manifest, JSON_UNESCAPED_UNICODE));
+
+        if ($progress !== null) {
+            $progress($filesSeen, 'done');
+        }
+
+        return $manifest;
     }
 
     /**

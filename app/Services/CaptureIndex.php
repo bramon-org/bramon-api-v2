@@ -1020,6 +1020,7 @@ class CaptureIndex
         }
 
         return $manifest;
+
     }
 
     /**
@@ -1044,13 +1045,6 @@ class CaptureIndex
         }
 
         return false;
-    }
-
-        if ($progress !== null) {
-            $progress($filesSeen, 'done');
-        }
-
-        return $manifest;
     }
 
     /**

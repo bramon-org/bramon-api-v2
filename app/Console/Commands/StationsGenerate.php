@@ -45,6 +45,8 @@ class StationsGenerate extends Command
         // Get stations directly from the filesystem (no index dependency)
         $stations = $processor->stationsFromFileSystem();
 
+        $this->info('Stations fetched: ' . count($stations));
+
         // Build stations.json content
         $stationsJson = [];
 

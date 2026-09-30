@@ -88,7 +88,7 @@ class IndexBuild extends Command
             } else {
                 $this->info('[IndexBuild] Manifest keys: ' . implode(', ', array_keys($manifest)));
 
-                $manifestJsonFile = $index->path('manifest.json');
+                $manifestJsonFile = rtrim($indexDir, DIRECTORY_SEPARATOR) . DIRECTORY_SEPARATOR . 'manifest.json';
 
                 if (!file_exists($manifestJsonFile)) {
                     $this->error("[IndexBuild] Manifest file not found at {$manifestJsonFile}");

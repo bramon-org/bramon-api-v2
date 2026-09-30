@@ -302,12 +302,16 @@ class DataProcessor
      */
     public function stationsFromIndex(CaptureIndex $index): array
     {
+        $stations = [];
+
+        if (!$index->exists()) {
+            return $stations;
+        }
+
         $aggregates = $index->stationAggregates();
 
         // Curated metadata is keyed by station name and stays small.
         $metadata = $this->stationReader?->getStationsIndexed() ?? [];
-
-        $stations = [];
 
         // Stations present in the captures tree, enriched with metadata.
         foreach ($aggregates as $stationName => $aggregate) {

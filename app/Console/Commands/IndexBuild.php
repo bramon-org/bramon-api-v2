@@ -105,6 +105,12 @@ class IndexBuild extends Command
             ]
         );
 
+        // Generate stations.json after building the index
+        $this->call('bramon:stations-generate', [
+            '--base-dir' => $baseDir,
+            '--force' => true,
+        ]);
+
         return Command::SUCCESS;
     }
 

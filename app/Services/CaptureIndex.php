@@ -766,7 +766,7 @@ class CaptureIndex
      * @param  callable|null  $progress  Receives (int $filesSeen, string $stage).
      * @return array<string,mixed> Summary written to the manifest.
      */
-    public function rebuild(FileSystemReader $reader, ?callable $progress = null, int $chunkSize = 20000): array
+    public function rebuild(FileSystemReader $reader, ?callable $progress = null, int $chunkSize = 20000, ?string $tempDir = null): array
     {
         if (!is_dir($this->indexDir) && !@mkdir($this->indexDir, 0775, true) && !is_dir($this->indexDir)) {
             throw new RuntimeException("Unable to create index directory: {$this->indexDir}");
@@ -783,7 +783,7 @@ class CaptureIndex
         }
 
         try {
-            $manifest = $this->build($reader, $progress, $chunkSize, $stagingDir);
+            $manifest = $this->build($reader, $progress, $chunkSize, $stagingDir, $tempDir);
             $this->publish($stagingDir);
         } finally {
             // Whether the build or the publish failed, the previous index has to
@@ -799,11 +799,11 @@ class CaptureIndex
      *
      * @return array<string,mixed> Summary destined for the manifest.
      */
-    protected function build(FileSystemReader $reader, ?callable $progress, int $chunkSize, string $stagingDir): array
+    protected function build(FileSystemReader $reader, ?callable $progress, int $chunkSize, string $stagingDir, ?string $tempDir = null): array
     {
         // Pass 1: stream files, coalescing them into captures. Spill sorted
         // chunks so the whole capture set is never held in memory.
-        $sorter = new ExternalSort($chunkSize, true);
+        $sorter = new ExternalSort($chunkSize, true, $tempDir);
 
         /** @var array<string,array<string,mixed>> $pending */
         $pending = [];

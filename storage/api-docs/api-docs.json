@@ -12,12 +12,12 @@
             "name": "MIT",
             "url": "https://opensource.org/licenses/MIT"
         },
-        "version": "1.0.0"
+        "version": "2.0.0"
     },
     "servers": [
         {
-            "url": "/api/v1/public",
-            "description": "API pública v1 (caminho relativo ao host)"
+            "url": "/api/v2/public",
+            "description": "API pública v2 (caminho relativo ao host)"
         }
     ],
     "paths": {

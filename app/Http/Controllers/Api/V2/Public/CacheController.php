@@ -1,6 +1,6 @@
 <?php
 
-namespace App\Http\Controllers\Api\V1\Public;
+namespace App\Http\Controllers\Api\V2\Public;
 
 use App\Http\Controllers\Controller;
 use App\Services\CaptureIndex;

@@ -1,12 +1,12 @@
 <?php
 
-namespace App\Http\Controllers\Api\V1\Public;
+namespace App\Http\Controllers\Api\V2\Public;
 
 use App\Http\Controllers\Controller;
-use App\Http\Requests\Api\V1\Public\CaptureListRequest;
-use App\Http\Requests\Api\V1\Public\CaptureSearchRequest;
-use App\Http\Resources\Api\V1\Public\CaptureResource;
-use App\Http\Resources\Api\V1\Public\PaginatedResource;
+use App\Http\Requests\Api\V2\Public\CaptureListRequest;
+use App\Http\Requests\Api\V2\Public\CaptureSearchRequest;
+use App\Http\Resources\Api\V2\Public\CaptureResource;
+use App\Http\Resources\Api\V2\Public\PaginatedResource;
 use App\Services\CaptureIndex;
 use App\Services\FileSystemReader;
 use Illuminate\Http\JsonResponse;

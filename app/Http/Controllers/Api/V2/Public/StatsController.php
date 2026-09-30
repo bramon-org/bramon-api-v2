@@ -1,10 +1,10 @@
 <?php
 
-namespace App\Http\Controllers\Api\V1\Public;
+namespace App\Http\Controllers\Api\V2\Public;
 
 use App\Http\Controllers\Controller;
-use App\Http\Requests\Api\V1\Public\StatsRequest;
-use App\Http\Resources\Api\V1\Public\StatsResource;
+use App\Http\Requests\Api\V2\Public\StatsRequest;
+use App\Http\Resources\Api\V2\Public\StatsResource;
 use App\Services\CaptureIndex;
 use App\Services\DataProcessor;
 use Illuminate\Http\JsonResponse;

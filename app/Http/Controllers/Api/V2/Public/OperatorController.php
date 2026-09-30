@@ -1,11 +1,11 @@
 <?php
 
-namespace App\Http\Controllers\Api\V1\Public;
+namespace App\Http\Controllers\Api\V2\Public;
 
 use App\Http\Controllers\Controller;
-use App\Http\Requests\Api\V1\Public\OperatorListRequest;
-use App\Http\Resources\Api\V1\Public\OperatorResource;
-use App\Http\Resources\Api\V1\Public\PaginatedResource;
+use App\Http\Requests\Api\V2\Public\OperatorListRequest;
+use App\Http\Resources\Api\V2\Public\OperatorResource;
+use App\Http\Resources\Api\V2\Public\PaginatedResource;
 use App\Services\CaptureIndex;
 use App\Services\DataProcessor;
 use Illuminate\Http\JsonResponse;

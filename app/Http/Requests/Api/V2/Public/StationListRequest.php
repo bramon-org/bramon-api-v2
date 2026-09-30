@@ -1,10 +1,10 @@
 <?php
 
-namespace App\Http\Requests\Api\V1\Public;
+namespace App\Http\Requests\Api\V2\Public;
 
 use Illuminate\Foundation\Http\FormRequest;
 
-class StatsRequest extends FormRequest
+class StationListRequest extends FormRequest
 {
     public function authorize(): bool
     {
@@ -14,6 +14,9 @@ class StatsRequest extends FormRequest
     public function rules(): array
     {
         return [
+            'page' => 'integer|min:1',
+            'per_page' => 'integer|min:1|max:100',
+            'active_only' => 'boolean',
             'use_cache' => 'boolean',
         ];
     }

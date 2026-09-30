@@ -20,7 +20,7 @@ use OpenApi\Attributes as OA;
 #[OA\OpenApi(
     info: new OA\Info(
         title: 'BRAMON API',
-        version: '1.0.0',
+        version: '2.0.0',
         description: <<<'TXT'
             API REST para acesso às capturas das estações do projeto BRAMON.
 
@@ -41,8 +41,8 @@ use OpenApi\Attributes as OA;
     ),
     servers: [
         new OA\Server(
-            url: '/api/v1/public',
-            description: 'API pública v1 (caminho relativo ao host)',
+            url: '/api/v2/public',
+            description: 'API pública v2 (caminho relativo ao host)',
         ),
     ],
     tags: [

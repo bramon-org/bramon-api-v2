@@ -108,7 +108,7 @@ class CaptureApiTest extends TestCase
 
     public function testHealthEndpoint(): void
     {
-        $response = $this->getJson('/api/v1/public/health');
+        $response = $this->getJson('/api/v2/public/health');
 
         $response->assertStatus(200)
             ->assertJsonStructure([
@@ -124,7 +124,7 @@ class CaptureApiTest extends TestCase
 
     public function testStatsEndpoint(): void
     {
-        $response = $this->getJson('/api/v1/public/stats');
+        $response = $this->getJson('/api/v2/public/stats');
 
         $response->assertStatus(200)
             ->assertJsonStructure([
@@ -144,7 +144,7 @@ class CaptureApiTest extends TestCase
 
     public function testCapturesListEndpoint(): void
     {
-        $response = $this->getJson('/api/v1/public/captures');
+        $response = $this->getJson('/api/v2/public/captures');
 
         $response->assertStatus(200)
             ->assertJsonStructure([
@@ -161,7 +161,7 @@ class CaptureApiTest extends TestCase
 
     public function testCapturesListIsNewestFirst(): void
     {
-        $response = $this->getJson('/api/v1/public/captures?per_page=3');
+        $response = $this->getJson('/api/v2/public/captures?per_page=3');
 
         $data = $response->json('data');
         $timestamps = array_column($data, 'captured_at');
@@ -173,8 +173,8 @@ class CaptureApiTest extends TestCase
 
     public function testCapturesPaginationIsStable(): void
     {
-        $page1 = $this->getJson('/api/v1/public/captures?per_page=2&page=1')->json('data');
-        $page2 = $this->getJson('/api/v1/public/captures?per_page=2&page=2')->json('data');
+        $page1 = $this->getJson('/api/v2/public/captures?per_page=2&page=1')->json('data');
+        $page2 = $this->getJson('/api/v2/public/captures?per_page=2&page=2')->json('data');
 
         $ids = array_merge(array_column($page1, 'id'), array_column($page2, 'id'));
 
@@ -184,7 +184,7 @@ class CaptureApiTest extends TestCase
 
     public function testCapturesFilterByStation(): void
     {
-        $response = $this->getJson('/api/v1/public/captures?station=TLP1');
+        $response = $this->getJson('/api/v2/public/captures?station=TLP1');
 
         $response->assertStatus(200)->assertJsonPath('total', 2);
     }
@@ -193,14 +193,14 @@ class CaptureApiTest extends TestCase
     {
         // The request rules cap per_page at 100, so an oversized request is a
         // validation error rather than a server error.
-        $this->getJson('/api/v1/public/captures?per_page=5000')
+        $this->getJson('/api/v2/public/captures?per_page=5000')
             ->assertStatus(422)
             ->assertJsonStructure(['detail', 'errors' => ['per_page']]);
     }
 
     public function testCapturesSearchEndpoint(): void
     {
-        $response = $this->getJson('/api/v1/public/captures/search?q=TLP1');
+        $response = $this->getJson('/api/v2/public/captures/search?q=TLP1');
 
         $response->assertStatus(200)
             ->assertJsonStructure(['query', 'total', 'results'])
@@ -209,7 +209,7 @@ class CaptureApiTest extends TestCase
 
     public function testStationsListEndpoint(): void
     {
-        $response = $this->getJson('/api/v1/public/stations');
+        $response = $this->getJson('/api/v2/public/stations');
 
         $response->assertStatus(200)
             ->assertJsonStructure([
@@ -231,7 +231,7 @@ class CaptureApiTest extends TestCase
 
     public function testStationShowEndpoint(): void
     {
-        $response = $this->getJson('/api/v1/public/stations/TLP1');
+        $response = $this->getJson('/api/v2/public/stations/TLP1');
 
         $response->assertStatus(200)
             ->assertJsonPath('name', 'TLP1')
@@ -241,19 +241,19 @@ class CaptureApiTest extends TestCase
 
     public function testStationShowReturns404ForUnknownStation(): void
     {
-        $this->getJson('/api/v1/public/stations/NOPE')->assertStatus(404);
+        $this->getJson('/api/v2/public/stations/NOPE')->assertStatus(404);
     }
 
     public function testStationCapturesEndpoint(): void
     {
-        $response = $this->getJson('/api/v1/public/stations/TLP1/captures');
+        $response = $this->getJson('/api/v2/public/stations/TLP1/captures');
 
         $response->assertStatus(200)->assertJsonPath('total', 2);
     }
 
     public function testStationStatsEndpoint(): void
     {
-        $response = $this->getJson('/api/v1/public/stations/TLP1/stats');
+        $response = $this->getJson('/api/v2/public/stations/TLP1/stats');
 
         $response->assertStatus(200)
             ->assertJsonPath('total_captures', 2)
@@ -263,7 +263,7 @@ class CaptureApiTest extends TestCase
 
     public function testOperatorsListEndpoint(): void
     {
-        $response = $this->getJson('/api/v1/public/operators');
+        $response = $this->getJson('/api/v2/public/operators');
 
         $response->assertStatus(200)
             ->assertJsonStructure([
@@ -285,7 +285,7 @@ class CaptureApiTest extends TestCase
     {
         $captureId = substr(md5('TLP1_20250802_034905'), 0, 32);
 
-        $response = $this->get("/api/v1/public/captures/{$captureId}/files/preview");
+        $response = $this->get("/api/v2/public/captures/{$captureId}/files/preview");
 
         $response->assertStatus(200);
         $response->assertHeader('content-disposition', 'inline; filename="M20250802_034905_TLP1_1P.jpg"');
@@ -298,7 +298,7 @@ class CaptureApiTest extends TestCase
     {
         $captureId = substr(md5('TLP1_20250802_034905'), 0, 32);
 
-        $this->get("/api/v1/public/captures/{$captureId}/files/bogus")
+        $this->get("/api/v2/public/captures/{$captureId}/files/bogus")
             ->assertStatus(404);
     }
 
@@ -306,20 +306,20 @@ class CaptureApiTest extends TestCase
     {
         // Guards the API exception handler, which used to report every error
         // as a 500.
-        $this->getJson('/api/v1/public/does-not-exist')->assertStatus(404);
+        $this->getJson('/api/v2/public/does-not-exist')->assertStatus(404);
     }
 
     public function testPathTraversalInFileTypeIsRejected(): void
     {
         $captureId = substr(md5('TLP1_20250802_034905'), 0, 32);
 
-        $this->get("/api/v1/public/captures/{$captureId}/files/..%2F..%2F..%2Fetc%2Fpasswd")
+        $this->get("/api/v2/public/captures/{$captureId}/files/..%2F..%2F..%2Fetc%2Fpasswd")
             ->assertStatus(404);
     }
 
     public function testCacheInvalidateEndpoint(): void
     {
-        $response = $this->postJson('/api/v1/public/cache/invalidate');
+        $response = $this->postJson('/api/v2/public/cache/invalidate');
 
         $response->assertStatus(200)
             ->assertJsonStructure(['message']);
@@ -330,10 +330,10 @@ class CaptureApiTest extends TestCase
         (new CaptureIndex($this->indexDir))->flush();
 
         foreach ([
-            '/api/v1/public/stats',
-            '/api/v1/public/stations',
-            '/api/v1/public/operators',
-            '/api/v1/public/captures',
+            '/api/v2/public/stats',
+            '/api/v2/public/stations',
+            '/api/v2/public/operators',
+            '/api/v2/public/captures',
         ] as $endpoint) {
             $this->getJson($endpoint)->assertStatus(503);
         }

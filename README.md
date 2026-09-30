@@ -88,7 +88,7 @@ BRAMON_BASE_DIR/
 
 ## 📚 Endpoints da API
 
-Base URL: `http://localhost:8080/api/v1/public`
+Base URL: `http://localhost:8080/api/v2/public`
 
 ### Health & Sistema
 
@@ -127,34 +127,34 @@ Base URL: `http://localhost:8080/api/v1/public`
 
 ```bash
 # Health check
-curl http://localhost:8080/api/v1/public/health
+curl http://localhost:8080/api/v2/public/health
 
 # Estatísticas gerais
-curl http://localhost:8080/api/v1/public/stats
+curl http://localhost:8080/api/v2/public/stats
 
 # Listar capturas (página 1, 15 itens)
-curl "http://localhost:8080/api/v1/public/captures?page=1&per_page=15"
+curl "http://localhost:8080/api/v2/public/captures?page=1&per_page=15"
 
 # Capturas da estação TLP1 em agosto 2025
-curl "http://localhost:8080/api/v1/public/captures?station=TLP1&date_from=2025-08-01&date_to=2025-08-31"
+curl "http://localhost:8080/api/v2/public/captures?station=TLP1&date_from=2025-08-01&date_to=2025-08-31"
 
 # Buscar capturas
-curl "http://localhost:8080/api/v1/public/captures/search?q=TLP1&limit=10"
+curl "http://localhost:8080/api/v2/public/captures/search?q=TLP1&limit=10"
 
 # Listar estações
-curl http://localhost:8080/api/v1/public/stations
+curl http://localhost:8080/api/v2/public/stations
 
 # Capturas de uma estação
-curl "http://localhost:8080/api/v1/public/stations/TLP1/captures"
+curl "http://localhost:8080/api/v2/public/stations/TLP1/captures"
 
 # Estatísticas da estação
-curl "http://localhost:8080/api/v1/public/stations/TLP1/stats"
+curl "http://localhost:8080/api/v2/public/stations/TLP1/stats"
 
 # Listar operadores
-curl http://localhost:8080/api/v1/public/operators
+curl http://localhost:8080/api/v2/public/operators
 
 # Invalida cache
-curl -X POST http://localhost:8080/api/v1/public/cache/invalidate
+curl -X POST http://localhost:8080/api/v2/public/cache/invalidate
 ```
 
 ## 🔧 Arquivos de Dados
@@ -207,7 +207,7 @@ curl -X POST http://localhost:8080/api/v1/public/cache/invalidate
 
 - **TTL padrão:** 60 segundos (configurável via `BRAMON_CACHE_TTL`)
 - **Invalidação automática:** Baseada em mtime dos arquivos JSON
-- **Invalidação manual:** `POST /api/v1/public/cache/invalidate`
+- **Invalidação manual:** `POST /api/v2/public/cache/invalidate`
 
 ## 🧪 Testes
 

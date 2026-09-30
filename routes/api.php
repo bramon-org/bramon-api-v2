@@ -1,11 +1,11 @@
 <?php
 
-use App\Http\Controllers\Api\V1\Public\CacheController;
-use App\Http\Controllers\Api\V1\Public\CaptureController;
-use App\Http\Controllers\Api\V1\Public\HealthController;
-use App\Http\Controllers\Api\V1\Public\OperatorController;
-use App\Http\Controllers\Api\V1\Public\StationController;
-use App\Http\Controllers\Api\V1\Public\StatsController;
+use App\Http\Controllers\Api\V2\Public\CacheController;
+use App\Http\Controllers\Api\V2\Public\CaptureController;
+use App\Http\Controllers\Api\V2\Public\HealthController;
+use App\Http\Controllers\Api\V2\Public\OperatorController;
+use App\Http\Controllers\Api\V2\Public\StationController;
+use App\Http\Controllers\Api\V2\Public\StatsController;
 use Illuminate\Support\Facades\Route;
 
 /*
@@ -14,11 +14,11 @@ use Illuminate\Support\Facades\Route;
 |--------------------------------------------------------------------------
 |
 | Public API endpoints for BRAMON meteor observation network.
-| All endpoints are under /v1/public prefix.
+| All endpoints are under /v2/public prefix.
 |
 */
 
-Route::prefix('v1/public')->group(function () {
+Route::prefix('v2/public')->group(function () {
     // Health & System
     Route::get('/health', [HealthController::class, '__invoke']);
     Route::get('/stats', [StatsController::class, '__invoke']);

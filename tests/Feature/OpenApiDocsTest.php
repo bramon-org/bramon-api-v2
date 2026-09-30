@@ -50,7 +50,7 @@ class OpenApiDocsTest extends TestCase
         $spec = $this->spec();
 
         $urls = array_column($spec['servers'], 'url');
-        $this->assertContains('/api/v1/public', $urls);
+        $this->assertContains('/api/v2/public', $urls);
     }
 
     /**
@@ -69,12 +69,12 @@ class OpenApiDocsTest extends TestCase
             $uri = $route->uri();
 
             // The router prefixes everything with `api`, and the controllers
-            // document paths relative to the `v1/public` server base URL.
-            if (!str_starts_with($uri, 'api/v1/public/')) {
+            // document paths relative to the `v2/public` server base URL.
+            if (!str_starts_with($uri, 'api/v2/public/')) {
                 continue;
             }
 
-            $path = substr($uri, strlen('api/v1/public'));
+            $path = substr($uri, strlen('api/v2/public'));
 
             foreach (array_diff($route->methods(), ['HEAD']) as $method) {
                 $registered[] = $method.' '.$path;

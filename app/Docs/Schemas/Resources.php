@@ -8,7 +8,7 @@ use OpenApi\Attributes as OA;
  * Schemas for captures, stations and operators.
  *
  * The field lists below mirror the JsonResource classes under
- * app/Http/Resources/Api/V1/Public, so the docs stay aligned with the actual
+ * app/Http/Resources/Api/V2/Public, so the docs stay aligned with the actual
  * API response payloads.
  */
 #[OA\Schema(

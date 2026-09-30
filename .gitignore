@@ -31,3 +31,7 @@ capturas
 
 # Compiled Blade templates
 /storage/framework/views/*.php
+
+# Runtime session and cache files
+/storage/framework/sessions/*
+/storage/framework/cache/data/*

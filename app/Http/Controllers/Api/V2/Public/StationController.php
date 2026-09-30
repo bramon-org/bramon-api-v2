@@ -1,13 +1,13 @@
 <?php
 
-namespace App\Http\Controllers\Api\V1\Public;
+namespace App\Http\Controllers\Api\V2\Public;
 
 use App\Http\Controllers\Controller;
-use App\Http\Requests\Api\V1\Public\StationListRequest;
-use App\Http\Requests\Api\V1\Public\StationCapturesRequest;
-use App\Http\Resources\Api\V1\Public\CaptureResource;
-use App\Http\Resources\Api\V1\Public\PaginatedResource;
-use App\Http\Resources\Api\V1\Public\StationResource;
+use App\Http\Requests\Api\V2\Public\StationListRequest;
+use App\Http\Requests\Api\V2\Public\StationCapturesRequest;
+use App\Http\Resources\Api\V2\Public\CaptureResource;
+use App\Http\Resources\Api\V2\Public\PaginatedResource;
+use App\Http\Resources\Api\V2\Public\StationResource;
 use App\Services\CaptureIndex;
 use App\Services\DataProcessor;
 use Illuminate\Http\JsonResponse;

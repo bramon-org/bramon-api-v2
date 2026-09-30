@@ -2,10 +2,6 @@
 
 namespace App\Services;
 
-use Illuminate\Support\Collection;
-use Illuminate\Support\Facades\Log;
-use function Laravel\Prompts\error;
-
 class DataProcessor
 {
     protected FileSystemReader $fileReader;
@@ -33,8 +29,12 @@ class DataProcessor
 
     /**
      * Group files by capture (station, date, time).
+     * Streams the input so file arrays are released as we go.
+     *
+     * @param  iterable<\App\Services\FileSystemReader|\Traversable<int,array<string,mixed>>|array<int,array<string,mixed>>>  $files
+     * @return array<string,array<int,array<string,mixed>>>
      */
-    protected function groupFilesByCapture(array $files): array
+    protected function groupFilesByCapture(iterable $files): array
     {
         $groups = [];
 
@@ -122,8 +122,11 @@ class DataProcessor
 
     /**
      * Process captures into station objects.
+     *
+     * @param  iterable<array<string,mixed>>  $captures
+     * @return array<int,array<string,mixed>>
      */
-    public function processStations(array $captures): array
+    public function processStations(iterable $captures): array
     {
         if ($this->stationReader) {
             return $this->loadStationsFromFile($captures);
@@ -134,41 +137,45 @@ class DataProcessor
 
     /**
      * Process stations from captures (fallback when no station file).
+     *
+     * Only aggregates count/first/last per station, so the full capture list
+     * is never retained in memory.
+     *
+     * @param  iterable<array<string,mixed>>  $captures
+     * @return array<int,array<string,mixed>>
      */
-    protected function processStationsFromCaptures(array $captures): array
+    protected function processStationsFromCaptures(iterable $captures): array
     {
         $stationData = [];
 
         foreach ($captures as $capture) {
             $station = $capture['station'];
+            $capturedAt = $capture['captured_at'];
 
             if (!isset($stationData[$station])) {
                 $stationData[$station] = [
-                    'captures' => [],
-                    'first_capture' => null,
-                    'last_capture' => null,
+                    'capture_count' => 1,
+                    'first_capture' => $capturedAt,
+                    'last_capture' => $capturedAt,
                 ];
+                continue;
             }
 
-            $stationData[$station]['captures'][] = $capture;
+            $stationData[$station]['capture_count']++;
 
-            if ($stationData[$station]['first_capture'] === null
-                || $capture['captured_at'] < $stationData[$station]['first_capture']) {
-                $stationData[$station]['first_capture'] = $capture['captured_at'];
+            if ($capturedAt < $stationData[$station]['first_capture']) {
+                $stationData[$station]['first_capture'] = $capturedAt;
             }
 
-            if ($stationData[$station]['last_capture'] === null
-                || $capture['captured_at'] > $stationData[$station]['last_capture']) {
-                $stationData[$station]['last_capture'] = $capture['captured_at'];
+            if ($capturedAt > $stationData[$station]['last_capture']) {
+                $stationData[$station]['last_capture'] = $capturedAt;
             }
         }
 
         $stations = [];
         foreach ($stationData as $stationName => $data) {
-            $stationId = substr(md5($stationName), 0, 32);
-
             $stations[] = [
-                'id' => $stationId,
+                'id' => substr(md5($stationName), 0, 32),
                 'name' => $stationName,
                 'operador' => null,
                 'city' => 'Unknown',
@@ -184,11 +191,13 @@ class DataProcessor
                 'camera_capture' => 'Unknown',
                 'active' => true,
                 'visible' => true,
-                'capture_count' => count($data['captures']),
+                'capture_count' => $data['capture_count'],
                 'first_capture' => $data['first_capture'],
                 'last_capture' => $data['last_capture'],
             ];
         }
+
+        unset($stationData);
 
         // Sort by name
         usort($stations, fn($a, $b) => strcmp($a['name'], $b['name']));
@@ -198,15 +207,38 @@ class DataProcessor
 
     /**
      * Load stations from JSON file and merge with capture data.
+     *
+     * @param  iterable<array<string,mixed>>  $captures
+     * @return array<int,array<string,mixed>>
      */
-    protected function loadStationsFromFile(array $captures): array
+    protected function loadStationsFromFile(iterable $captures): array
     {
         $rawStations = $this->stationReader->getStationsIndexed();
 
-        // Group captures by station
+        // Aggregate only count/first/last per station instead of keeping whole captures.
         $capturesByStation = [];
         foreach ($captures as $capture) {
-            $capturesByStation[$capture['station']][] = $capture;
+            $station = $capture['station'];
+            $capturedAt = $capture['captured_at'];
+
+            if (!isset($capturesByStation[$station])) {
+                $capturesByStation[$station] = [
+                    'count' => 1,
+                    'first' => $capturedAt,
+                    'last' => $capturedAt,
+                ];
+                continue;
+            }
+
+            $capturesByStation[$station]['count']++;
+
+            if ($capturedAt < $capturesByStation[$station]['first']) {
+                $capturesByStation[$station]['first'] = $capturedAt;
+            }
+
+            if ($capturedAt > $capturesByStation[$station]['last']) {
+                $capturesByStation[$station]['last'] = $capturedAt;
+            }
         }
 
         $stations = [];
@@ -216,14 +248,10 @@ class DataProcessor
                 continue;
             }
 
-            $stationCaptures = $capturesByStation[$stationName] ?? [];
-            $captureCount = count($stationCaptures);
-            $firstCapture = $stationCaptures
-                ? min(array_column($stationCaptures, 'captured_at'))
-                : null;
-            $lastCapture = $stationCaptures
-                ? max(array_column($stationCaptures, 'captured_at'))
-                : null;
+            $aggregate = $capturesByStation[$stationName] ?? null;
+            $captureCount = $aggregate['count'] ?? 0;
+            $firstCapture = $aggregate['first'] ?? null;
+            $lastCapture = $aggregate['last'] ?? null;
 
             $stations[] = [
                 'id' => $stationData['id'] ?? substr(md5($stationName), 0, 32),
@@ -255,16 +283,91 @@ class DataProcessor
     }
 
     /**
+     * Build station objects straight from the on-disk index aggregates.
+     *
+     * This is the path used by the listing endpoints: it merges the
+     * curated stations.json metadata with pre-computed capture counts, so
+     * request memory depends on the number of stations (hundreds) instead of
+     * the number of files on disk (millions).
+     *
+     * @return array<int,array<string,mixed>>
+     */
+    public function stationsFromIndex(CaptureIndex $index): array
+    {
+        $aggregates = $index->stationAggregates();
+
+        // Curated metadata is keyed by station name and stays small.
+        $metadata = $this->stationReader?->getStationsIndexed() ?? [];
+
+        $stations = [];
+
+        // Stations present in the captures tree, enriched with metadata.
+        foreach ($aggregates as $stationName => $aggregate) {
+            $stations[] = $this->buildStation($stationName, $metadata[$stationName] ?? null, $aggregate);
+        }
+
+        // Stations that have metadata but no captures yet still belong in the
+        // listing, with a zero capture count.
+        foreach ($metadata as $stationName => $stationData) {
+            if ($stationName === '' || isset($aggregates[$stationName])) {
+                continue;
+            }
+
+            $stations[] = $this->buildStation($stationName, $stationData, null);
+        }
+
+        usort($stations, fn($a, $b) => strcmp($a['name'], $b['name']));
+
+        return $stations;
+    }
+
+    /**
+     * Assemble a single station record.
+     *
+     * @param  array<string,mixed>|null  $stationData
+     * @param  array<string,mixed>|null  $aggregate
+     * @return array<string,mixed>
+     */
+    protected function buildStation(string $stationName, ?array $stationData, ?array $aggregate): array
+    {
+        return [
+            'id' => $stationData['id'] ?? substr(md5($stationName), 0, 32),
+            'name' => $stationName,
+            'operador' => $stationData['operador'] ?? null,
+            'city' => $stationData['city'] ?? 'Unknown',
+            'state' => $stationData['state'] ?? 'Unknown',
+            'country' => $stationData['country'] ?? 'BR',
+            'latitude' => (float) ($stationData['latitude'] ?? 0),
+            'longitude' => (float) ($stationData['longitude'] ?? 0),
+            'azimuth' => (float) ($stationData['azimuth'] ?? 0),
+            'elevation' => (float) ($stationData['elevation'] ?? 0),
+            'fov' => (float) ($stationData['fov'] ?? 0),
+            'camera_model' => $stationData['camera_model'] ?? 'Unknown',
+            'camera_lens' => $stationData['camera_lens'] ?? 'Unknown',
+            'camera_capture' => $stationData['camera_capture'] ?? 'Unknown',
+            'active' => (bool) ($stationData['active'] ?? true),
+            'visible' => (bool) ($stationData['visible'] ?? true),
+            'capture_count' => (int) ($aggregate['count'] ?? 0),
+            'first_capture' => $aggregate['first'] ?? null,
+            'last_capture' => $aggregate['last'] ?? null,
+        ];
+    }
+
+    /**
      * Process operators from JSON file, linking to stations.
+     *
+     * Falls back to one operator per station when operators.json is missing or
+     * contains no usable entries, so a fresh install still lists operators
+     * instead of returning an empty page.
      */
     public function processOperators(array $stations): array
     {
         $operators = [];
 
-        if ($this->operatorReader) {
-            $rawOperators = $this->operatorReader->getOperators();
+        $rawOperators = $this->operatorReader?->getOperators() ?? [];
+
+        if (!empty($rawOperators)) {
             $stationMap = array_column($stations, null, 'name');
-            $stationNames = array_keys($stationMap);
 
             foreach ($rawOperators as $opData) {
                 $linkedStations = $this->operatorReader->getLinkedStations($opData, $stationMap);
@@ -274,8 +377,8 @@ class DataProcessor
                     'name' => $opData['nome'] ?? $opData['name'] ?? 'Operador Desconhecido',
                     'email' => $opData['email'] ?? '',
                     'role' => $opData['role'] ?? 'operator',
-                    'visible' => (bool)($opData['visivel'] ?? $opData['visible'] ?? true),
-                    'active' => (bool)($opData['ativo'] ?? $opData['active'] ?? true),
+                    'visible' => (bool) ($opData['visivel'] ?? $opData['visible'] ?? true),
+                    'active' => (bool) ($opData['ativo'] ?? $opData['active'] ?? true),
                     'station_count' => count($linkedStations),
                     'stations' => array_values($linkedStations),
                 ];
@@ -305,38 +408,86 @@ class DataProcessor
     }
 
     /**
-     * Calculate general statistics.
+     * Aggregate statistics in a single streaming pass.
+     *
+     * Avoids materialising the full capture list just to count/group it.
+     *
+     * @param  iterable<array<string,mixed>>  $captures
+     * @return array{
+     *     total_captures:int,
+     *     captures_by_station:array<string,int>,
+     *     captures_by_month:array<string,int>,
+     *     earliest:?string,
+     *     latest:?string
+     * }
      */
-    public function calculateStats(
-        array $captures,
-        array $stations,
-        array $operators,
-        array $files
-    ): array {
-        $capturesByStation = [];
-        foreach ($captures as $capture) {
-            $capturesByStation[$capture['station']] = ($capturesByStation[$capture['station']] ?? 0) + 1;
-        }
+    public function aggregateCaptures(iterable $captures): array
+    {
+        $total = 0;
+        $byStation = [];
+        $byMonth = [];
+        $earliest = null;
+        $latest = null;
 
-        $capturesByMonth = [];
         foreach ($captures as $capture) {
+            $total++;
+
+            $station = $capture['station'];
+            $byStation[$station] = ($byStation[$station] ?? 0) + 1;
+
             $monthKey = substr($capture['capture_date'], 0, 6); // YYYYMM
-            $capturesByMonth[$monthKey] = ($capturesByMonth[$monthKey] ?? 0) + 1;
-        }
+            $byMonth[$monthKey] = ($byMonth[$monthKey] ?? 0) + 1;
 
-        $dates = array_column($captures, 'captured_at');
+            $capturedAt = $capture['captured_at'];
+            if ($earliest === null || $capturedAt < $earliest) {
+                $earliest = $capturedAt;
+            }
+            if ($latest === null || $capturedAt > $latest) {
+                $latest = $capturedAt;
+            }
+        }
 
         return [
-            'total_captures' => count($captures),
-            'total_stations' => count($stations),
-            'total_operators' => count($operators),
-            'total_files' => count($files),
+            'total_captures' => $total,
+            'captures_by_station' => $byStation,
+            'captures_by_month' => $byMonth,
+            'earliest' => $earliest,
+            'latest' => $latest,
+        ];
+    }
+
+    /**
+     * Calculate general statistics.
+     *
+     * @param  iterable<array<string,mixed>>  $captures
+     * @param  iterable<array<string,mixed>>  $stations
+     * @param  iterable<array<string,mixed>>  $operators
+     * @param  iterable<array<string,mixed>>  $files
+     * @return array<string,mixed>
+     */
+    public function calculateStats(
+        iterable $captures,
+        iterable $stations,
+        iterable $operators,
+        iterable $files
+    ): array {
+        $stationsCount = is_array($stations) ? count($stations) : iterator_count($stations);
+        $operatorsCount = is_array($operators) ? count($operators) : iterator_count($operators);
+        $filesCount = is_array($files) ? count($files) : iterator_count($files);
+
+        $aggregate = $this->aggregateCaptures($captures);
+
+        return [
+            'total_captures' => $aggregate['total_captures'],
+            'total_stations' => $stationsCount,
+            'total_operators' => $operatorsCount,
+            'total_files' => $filesCount,
             'date_range' => [
-                'earliest' => $dates ? min($dates) : null,
-                'latest' => $dates ? max($dates) : null,
+                'earliest' => $aggregate['earliest'],
+                'latest' => $aggregate['latest'],
             ],
-            'captures_by_station' => $capturesByStation,
-            'captures_by_month' => $capturesByMonth,
+            'captures_by_station' => $aggregate['captures_by_station'],
+            'captures_by_month' => $aggregate['captures_by_month'],
             'last_updated' => date('c'),
         ];
     }

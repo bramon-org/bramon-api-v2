@@ -7,16 +7,22 @@ use App\Http\Requests\Api\V1\Public\CaptureListRequest;
 use App\Http\Requests\Api\V1\Public\CaptureSearchRequest;
 use App\Http\Resources\Api\V1\Public\CaptureResource;
 use App\Http\Resources\Api\V1\Public\PaginatedResource;
-use App\Services\DataProcessor;
+use App\Services\CaptureIndex;
 use App\Services\FileSystemReader;
 use Illuminate\Http\JsonResponse;
-use Illuminate\Support\Facades\Storage;
+use Symfony\Component\HttpFoundation\Response;
 
+/**
+ * Capture endpoints.
+ *
+ * Served from the prebuilt CaptureIndex with seek-based pagination, so a page
+ * costs O(per_page) instead of loading every file in the captures tree.
+ */
 class CaptureController extends Controller
 {
     public function __construct(
-        protected DataProcessor $dataProcessor,
-        protected FileSystemReader $fileReader
+        protected FileSystemReader $fileReader,
+        protected CaptureIndex $index
     ) {}
 
     /**
@@ -24,25 +30,20 @@ class CaptureController extends Controller
      */
     public function index(CaptureListRequest $request): JsonResponse
     {
-        $useCache = $request->boolean('use_cache', true);
-        $page = $request->integer('page', 1);
-        $perPage = $request->integer('per_page', 15);
+        if (!$this->index->exists()) {
+            return $this->indexMissingResponse();
+        }
 
-        $captures = $this->dataProcessor->processCaptures(
-            $this->fileReader->getFiles($useCache)
-        );
+        $page = max(1, $request->integer('page', 1));
+        $perPage = $this->perPage($request->integer('per_page', 15));
 
-        // Apply filters
-        $filtered = $this->applyFilters($captures, $request);
+        $result = $this->index->capturesPage($page, $perPage, $this->filters($request));
 
-        // Paginate
-        $total = count($filtered);
-        $totalPages = (int) ceil($total / $perPage);
-        $start = ($page - 1) * $perPage;
-        $paginated = array_slice($filtered, $start, $perPage);
+        $total = $result['total'];
+        $totalPages = $result['total_pages'];
 
         $resource = new PaginatedResource(
-            CaptureResource::collection($paginated)->resolve(),
+            CaptureResource::collection($result['items'])->resolve(),
             $total,
             $page,
             $perPage,
@@ -59,132 +60,116 @@ class CaptureController extends Controller
      */
     public function search(CaptureSearchRequest $request): JsonResponse
     {
-        $useCache = $request->boolean('use_cache', true);
-        $query = $request->string('q')->toString();
-        $limit = $request->integer('limit', 50);
-
-        $captures = $this->dataProcessor->processCaptures(
-            $this->fileReader->getFiles($useCache)
-        );
-
-        $qLower = strtolower($query);
-        $results = [];
-
-        foreach ($captures as $capture) {
-            // Search in station
-            if (str_contains(strtolower($capture['station']), $qLower)) {
-                $results[] = $capture;
-                continue;
-            }
-
-            // Search in date
-            if (str_contains($capture['capture_date'], $query)
-                || str_contains($capture['captured_at'], $query)) {
-                $results[] = $capture;
-                continue;
-            }
-
-            // Search in files
-            foreach ($capture['files'] as $file) {
-                if (str_contains(strtolower($file['filename']), $qLower)
-                    || str_contains(strtolower($file['type']), $qLower)) {
-                    $results[] = $capture;
-                    break;
-                }
-            }
-
-            if (count($results) >= $limit) {
-                break;
-            }
+        if (!$this->index->exists()) {
+            return $this->indexMissingResponse();
         }
+
+        $query = $request->string('q')->toString();
+        $limit = max(1, min($request->integer('limit', 50), 200));
+
+        // Results are ordered newest first, so page 1 is the top slice.
+        $result = $this->index->capturesPage(1, $limit, ['query' => $query ?: null]);
 
         return response()->json([
             'query' => $query,
-            'total' => count($results),
-            'results' => CaptureResource::collection(array_slice($results, 0, $limit))->resolve(),
+            'total' => $result['total'],
+            'results' => CaptureResource::collection($result['items'])->resolve(),
         ]);
     }
 
     /**
      * Get a specific capture by ID.
      */
-    public function show(string $captureId, bool $useCache = true): JsonResponse
+    public function show(string $captureId): JsonResponse
     {
-        $captures = $this->dataProcessor->processCaptures(
-            $this->fileReader->getFiles($useCache)
-        );
-
-        foreach ($captures as $capture) {
-            if ($capture['id'] === $captureId) {
-                return response()->json(new CaptureResource($capture));
-            }
+        if (!$this->index->exists()) {
+            return $this->indexMissingResponse();
         }
 
-        return response()->json(['detail' => 'Captura não encontrada'], 404);
+        $capture = $this->index->captureById($captureId);
+
+        if ($capture === null) {
+            return response()->json(['detail' => 'Captura não encontrada'], 404);
+        }
+
+        return response()->json(new CaptureResource($capture));
     }
 
     /**
      * Get a capture file (metadata, preview, thumbnail).
+     *
+     * Returns a BinaryFileResponse on success, so the declared type is the
+     * Symfony response base class rather than JsonResponse.
      */
-    public function file(string $captureId, string $fileType): JsonResponse
+    public function file(string $captureId, string $fileType): Response
     {
-        $captures = $this->dataProcessor->processCaptures(
-            $this->fileReader->getFiles(true)
-        );
-
-        foreach ($captures as $capture) {
-            if ($capture['id'] === $captureId) {
-                foreach ($capture['files'] as $file) {
-                    if ($file['type'] === $fileType) {
-                        $filePath = $this->fileReader->getBaseDir() . '/' . $file['url'];
-
-                        if (file_exists($filePath)) {
-                            return response()->file($filePath, [
-                                'Content-Disposition' => 'inline; filename="' . $file['filename'] . '"',
-                            ]);
-                        }
-
-                        return response()->json(['detail' => 'Arquivo não encontrado'], 404);
-                    }
-                }
-
-                return response()->json(['detail' => "Arquivo {$fileType} não encontrado"], 404);
-            }
+        if (!$this->index->exists()) {
+            return $this->indexMissingResponse();
         }
 
-        return response()->json(['detail' => 'Captura não encontrada'], 404);
+        $capture = $this->index->captureById($captureId);
+
+        if ($capture === null) {
+            return response()->json(['detail' => 'Captura não encontrada'], 404);
+        }
+
+        foreach ((array) ($capture['files'] ?? []) as $file) {
+            if (($file['type'] ?? null) !== $fileType) {
+                continue;
+            }
+
+            // Guard against path traversal before serving from disk.
+            $filePath = $this->fileReader->getBaseDir() . '/' . ltrim((string) $file['url'], '/');
+            $realBase = realpath($this->fileReader->getBaseDir());
+            $realFile = realpath($filePath);
+
+            if ($realBase === false || $realFile === false || !str_starts_with($realFile, $realBase . DIRECTORY_SEPARATOR)) {
+                return response()->json(['detail' => 'Arquivo não encontrado'], 404);
+            }
+
+            if (!is_file($realFile)) {
+                return response()->json(['detail' => 'Arquivo não encontrado'], 404);
+            }
+
+            return response()->file($realFile, [
+                'Content-Disposition' => 'inline; filename="' . basename($realFile) . '"',
+            ]);
+        }
+
+        return response()->json(['detail' => "Arquivo {$fileType} não encontrado"], 404);
     }
 
     /**
-     * Apply filters to captures.
+     * Translate the request into index filters.
+     *
+     * @return array<string,mixed>
      */
-    protected function applyFilters(array $captures, CaptureListRequest $request): array
+    protected function filters(CaptureListRequest $request): array
     {
-        $filtered = $captures;
+        return [
+            'station' => $request->string('station')->toString() ?: null,
+            'date_from' => $request->string('date_from')->toString() ?: null,
+            'date_to' => $request->string('date_to')->toString() ?: null,
+            'has_metadata' => $request->has('has_metadata') ? $request->boolean('has_metadata') : null,
+            'has_preview' => $request->has('has_preview') ? $request->boolean('has_preview') : null,
+        ];
+    }
 
-        if ($station = $request->string('station')->toString()) {
-            $filtered = array_filter($filtered, fn($c) => $c['station'] === $station);
-        }
+    /**
+     * Clamp the requested page size.
+     */
+    protected function perPage(int $requested): int
+    {
+        return max(1, min($requested, 100));
+    }
 
-        if ($dateFrom = $request->string('date_from')->toString()) {
-            $filtered = array_filter($filtered, fn($c) => $c['captured_at'] >= $dateFrom);
-        }
-
-        if ($dateTo = $request->string('date_to')->toString()) {
-            $dateToEnd = $dateTo . ' 23:59:59';
-            $filtered = array_filter($filtered, fn($c) => $c['captured_at'] <= $dateToEnd);
-        }
-
-        if ($request->has('has_metadata')) {
-            $hasMetadata = $request->boolean('has_metadata');
-            $filtered = array_filter($filtered, fn($c) => $c['has_metadata'] === $hasMetadata);
-        }
-
-        if ($request->has('has_preview')) {
-            $hasPreview = $request->boolean('has_preview');
-            $filtered = array_filter($filtered, fn($c) => $c['has_preview'] === $hasPreview);
-        }
-
-        return array_values($filtered);
+    /**
+     * Actionable response when the index has not been built yet.
+     */
+    protected function indexMissingResponse(): JsonResponse
+    {
+        return response()->json([
+            'detail' => 'Índice de capturas não construído. Execute: php artisan bramon:index',
+        ], 503);
     }
 }

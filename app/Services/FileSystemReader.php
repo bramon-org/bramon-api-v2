@@ -11,6 +11,7 @@ class FileSystemReader
     protected ?array $cache = null;
     protected ?int $cacheTime = null;
     protected int $cacheTtl;
+    protected int $maxCacheSize = 10000; // Max files to cache in memory
 
     public function __construct(string $baseDir, int $cacheTtl = 60)
     {
@@ -20,6 +21,7 @@ class FileSystemReader
 
     /**
      * Get all files from the filesystem with caching.
+     * WARNING: Loads all files into memory. Use getFilesGenerator() for large directories.
      */
     public function getFiles(bool $useCache = true): array
     {
@@ -28,14 +30,21 @@ class FileSystemReader
         }
 
         $files = $this->scanFiles();
-        $this->cache = $files;
-        $this->cacheTime = time();
+        
+        // Only cache if within size limit to prevent memory exhaustion
+        if ($useCache && count($files) <= $this->maxCacheSize) {
+            $this->cache = $files;
+            $this->cacheTime = time();
+        } elseif ($useCache) {
+            Log::warning("File count ({$this->maxCacheSize}) exceeds cache limit ({$this->maxCacheSize}), skipping memory cache");
+        }
 
         return $files;
     }
 
     /**
      * Get files as a generator to avoid memory issues with large directories.
+     * This is the preferred method for processing large datasets.
      */
     public function getFilesGenerator(bool $useCache = true): \Generator
     {
@@ -47,7 +56,8 @@ class FileSystemReader
         }
 
         $files = [];
-        
+        $count = 0;
+
         if (!is_dir($this->baseDir)) {
             Log::warning("Base directory does not exist: {$this->baseDir}");
             return;
@@ -72,19 +82,59 @@ class FileSystemReader
 
             $fileInfo = $this->getFileInfo($filePath, $relPath);
             if ($fileInfo) {
-                $files[] = $fileInfo;
+                if ($useCache && $count < $this->maxCacheSize) {
+                    $files[] = $fileInfo;
+                }
+                $count++;
                 yield $fileInfo;
             }
         }
 
-        if ($useCache) {
+        if ($useCache && $count <= $this->maxCacheSize) {
             $this->cache = $files;
             $this->cacheTime = time();
         }
     }
 
     /**
-     * Scan the filesystem for capture files.
+     * Get files filtered by type, using generator for memory efficiency.
+     */
+    public function getFilesByType(string $type, bool $useCache = true): \Generator
+    {
+        foreach ($this->getFilesGenerator($useCache) as $file) {
+            if ($file['type'] === $type) {
+                yield $file;
+            }
+        }
+    }
+
+    /**
+     * Get files for a specific station, using generator for memory efficiency.
+     */
+    public function getFilesByStation(string $station, bool $useCache = true): \Generator
+    {
+        foreach ($this->getFilesGenerator($useCache) as $file) {
+            if ($file['station'] === $station) {
+                yield $file;
+            }
+        }
+    }
+
+    /**
+     * Count total files without loading them all into memory.
+     */
+    public function countFiles(): int
+    {
+        $count = 0;
+        foreach ($this->getFilesGenerator(false) as $_) {
+            $count++;
+        }
+        return $count;
+    }
+
+    /**
+     * Scan the filesystem for capture files (loads all into memory).
+     * Use only when file count is known to be small.
      */
     protected function scanFiles(): array
     {
@@ -127,6 +177,12 @@ class FileSystemReader
     protected function getFileInfo(string $filePath, string $relPath): ?array
     {
         $filename = basename($filePath);
+        
+        // Fast pre-check before expensive parsing
+        if (!FilenameParser::isValidFormat($filename)) {
+            return null;
+        }
+
         $parsed = FilenameParser::parse($filename);
 
         if (!$parsed) {
@@ -184,5 +240,13 @@ class FileSystemReader
     {
         $this->cache = null;
         $this->cacheTime = null;
+    }
+
+    /**
+     * Set maximum cache size (number of files).
+     */
+    public function setMaxCacheSize(int $size): void
+    {
+        $this->maxCacheSize = $size;
     }
 }

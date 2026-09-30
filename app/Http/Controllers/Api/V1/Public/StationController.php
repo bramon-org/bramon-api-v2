@@ -8,15 +8,23 @@ use App\Http\Requests\Api\V1\Public\StationCapturesRequest;
 use App\Http\Resources\Api\V1\Public\CaptureResource;
 use App\Http\Resources\Api\V1\Public\PaginatedResource;
 use App\Http\Resources\Api\V1\Public\StationResource;
+use App\Services\CaptureIndex;
 use App\Services\DataProcessor;
-use App\Services\FileSystemReader;
 use Illuminate\Http\JsonResponse;
 
+/**
+ * Station endpoints.
+ *
+ * All responses are served from the prebuilt CaptureIndex. Station listing and
+ * lookups previously materialised every file in the captures tree, which
+ * exhausted the PHP memory limit; now request memory scales with the page size
+ * and the number of stations instead.
+ */
 class StationController extends Controller
 {
     public function __construct(
         protected DataProcessor $dataProcessor,
-        protected FileSystemReader $fileReader
+        protected CaptureIndex $index
     ) {}
 
     /**
@@ -24,15 +32,17 @@ class StationController extends Controller
      */
     public function index(StationListRequest $request): JsonResponse
     {
-        $useCache = $request->boolean('use_cache', true);
-        $page = $request->integer('page', 1);
-        $perPage = $request->integer('per_page', 15);
+        $page = max(1, $request->integer('page', 1));
+        $perPage = $this->perPage($request->integer('per_page', 15));
         $activeOnly = $request->boolean('active_only', false);
 
-        $captures = $this->dataProcessor->processCaptures(
-            $this->fileReader->getFiles($useCache)
-        );
-        $stations = $this->dataProcessor->processStations($captures);
+        if (!$this->index->exists()) {
+            return $this->indexMissingResponse();
+        }
+
+        // Station count is bounded (hundreds), so building the list here is
+        // cheap; only the capture scan used to be unbounded.
+        $stations = $this->dataProcessor->stationsFromIndex($this->index);
 
         if ($activeOnly) {
             $stations = array_filter($stations, fn($s) => $s['active']);
@@ -43,10 +53,9 @@ class StationController extends Controller
         $total = count($stations);
         $totalPages = (int) ceil($total / $perPage);
         $start = ($page - 1) * $perPage;
-        $paginated = array_slice($stations, $start, $perPage);
 
         $resource = new PaginatedResource(
-            StationResource::collection($paginated)->resolve(),
+            StationResource::collection(array_slice($stations, $start, $perPage))->resolve(),
             $total,
             $page,
             $perPage,
@@ -61,12 +70,19 @@ class StationController extends Controller
     /**
      * Get a specific station by name.
      */
-    public function show(string $stationName, bool $useCache = true): JsonResponse
+    public function show(string $stationName): JsonResponse
     {
-        $captures = $this->dataProcessor->processCaptures(
-            $this->fileReader->getFiles($useCache)
-        );
-        $stations = $this->dataProcessor->processStations($captures);
+        if (!$this->index->exists()) {
+            return $this->indexMissingResponse();
+        }
+
+        $aggregate = $this->index->stationAggregate($stationName);
+
+        if ($aggregate === null) {
+            return response()->json(['detail' => 'Estação não encontrada'], 404);
+        }
+
+        $stations = $this->dataProcessor->stationsFromIndex($this->index);
 
         foreach ($stations as $station) {
             if ($station['name'] === $stationName) {
@@ -82,40 +98,27 @@ class StationController extends Controller
      */
     public function captures(string $stationName, StationCapturesRequest $request): JsonResponse
     {
-        $useCache = $request->boolean('use_cache', true);
-        $page = $request->integer('page', 1);
-        $perPage = $request->integer('per_page', 15);
-
-        $captures = $this->dataProcessor->processCaptures(
-            $this->fileReader->getFiles($useCache)
-        );
-
-        // Filter by station
-        $stationCaptures = array_filter($captures, fn($c) => $c['station'] === $stationName);
-
-        // Filter by date
-        if ($dateFrom = $request->string('date_from')->toString()) {
-            $stationCaptures = array_filter($stationCaptures, fn($c) => $c['captured_at'] >= $dateFrom);
+        if (!$this->index->exists()) {
+            return $this->indexMissingResponse();
         }
 
-        if ($dateTo = $request->string('date_to')->toString()) {
-            $dateToEnd = $dateTo . ' 23:59:59';
-            $stationCaptures = array_filter($stationCaptures, fn($c) => $c['captured_at'] <= $dateToEnd);
-        }
-
-        $stationCaptures = array_values($stationCaptures);
-
-        if (empty($stationCaptures)) {
+        if ($this->index->stationAggregate($stationName) === null) {
             return response()->json(['detail' => 'Estação não encontrada'], 404);
         }
 
-        $total = count($stationCaptures);
-        $totalPages = (int) ceil($total / $perPage);
-        $start = ($page - 1) * $perPage;
-        $paginated = array_slice($stationCaptures, $start, $perPage);
+        $page = max(1, $request->integer('page', 1));
+        $perPage = $this->perPage($request->integer('per_page', 15));
+
+        $result = $this->index->stationCapturesPage($stationName, $page, $perPage, [
+            'date_from' => $request->string('date_from')->toString() ?: null,
+            'date_to' => $request->string('date_to')->toString() ?: null,
+        ]);
+
+        $total = $result['total'];
+        $totalPages = $result['total_pages'];
 
         $resource = new PaginatedResource(
-            CaptureResource::collection($paginated)->resolve(),
+            CaptureResource::collection($result['items'])->resolve(),
             $total,
             $page,
             $perPage,
@@ -130,36 +133,41 @@ class StationController extends Controller
     /**
      * Get statistics for a specific station.
      */
-    public function stats(string $stationName, bool $useCache = true): JsonResponse
+    public function stats(string $stationName): JsonResponse
     {
-        $captures = $this->dataProcessor->processCaptures(
-            $this->fileReader->getFiles($useCache)
-        );
+        if (!$this->index->exists()) {
+            return $this->indexMissingResponse();
+        }
 
-        $stationCaptures = array_filter($captures, fn($c) => $c['station'] === $stationName);
-        $stationCaptures = array_values($stationCaptures);
+        $stats = $this->index->stationStats($stationName);
 
-        if (empty($stationCaptures)) {
+        if ($stats === null) {
             return response()->json(['detail' => 'Estação não encontrada'], 404);
         }
 
-        $dates = array_column($stationCaptures, 'captured_at');
-        $months = [];
+        $months = $stats['captures_by_month'];
+        unset($stats['captures_by_month']);
 
-        foreach ($stationCaptures as $capture) {
-            $monthKey = substr($capture['capture_date'], 0, 6);
-            $months[$monthKey] = ($months[$monthKey] ?? 0) + 1;
-        }
-
-        return response()->json([
-            'station' => $stationName,
-            'total_captures' => count($stationCaptures),
-            'first_capture' => min($dates),
-            'last_capture' => max($dates),
+        return response()->json(array_merge($stats, [
             'captures_by_month' => $months,
-            'has_metadata_count' => count(array_filter($stationCaptures, fn($c) => $c['has_metadata'])),
-            'has_preview_count' => count(array_filter($stationCaptures, fn($c) => $c['has_preview'])),
-            'has_thumbnail_count' => count(array_filter($stationCaptures, fn($c) => $c['has_thumbnail'])),
-        ]);
+        ]));
+    }
+
+    /**
+     * Clamp the requested page size.
+     */
+    protected function perPage(int $requested): int
+    {
+        return max(1, min($requested, 100));
+    }
+
+    /**
+     * Actionable response when the index has not been built yet.
+     */
+    protected function indexMissingResponse(): JsonResponse
+    {
+        return response()->json([
+            'detail' => 'Índice de capturas não construído. Execute: php artisan bramon:index',
+        ], 503);
     }
 }

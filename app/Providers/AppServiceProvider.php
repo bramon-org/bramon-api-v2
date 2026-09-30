@@ -2,6 +2,7 @@
 
 namespace App\Providers;
 
+use App\Services\CaptureIndex;
 use App\Services\DataProcessor;
 use App\Services\FileSystemReader;
 use App\Services\OperatorReader;
@@ -29,6 +30,16 @@ class AppServiceProvider extends ServiceProvider
         // Register StationReader as singleton
         $this->app->singleton(StationReader::class, function ($app) {
             return new StationReader(Config::get('bramon.stations_file'));
+        });
+
+        // Register CaptureIndex as singleton.
+        // Listing endpoints read this prebuilt index so they never have to
+        // walk the captures tree, which keeps request memory flat.
+        $this->app->singleton(CaptureIndex::class, function ($app) {
+            return new CaptureIndex(
+                Config::get('bramon.index_dir'),
+                (bool) Config::get('bramon.index_auto_build', false)
+            );
         });
 
         // Register DataProcessor as singleton

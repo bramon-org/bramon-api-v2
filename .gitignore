@@ -21,3 +21,6 @@ yarn-error.log
 .php-cs-fixer.cache
 capturas
 /database/*.sqlite
+
+# Generated capture index (rebuild with: php artisan bramon:index)
+/storage/app/bramon

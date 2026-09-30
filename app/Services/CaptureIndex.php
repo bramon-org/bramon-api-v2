@@ -880,7 +880,17 @@ class CaptureIndex
             $line .= "\n";
 
             fwrite($capturesHandle, $line);
+            fflush($capturesHandle);
+            if (function_exists('fsync')) {
+                @fsync($capturesHandle);
+            }
+
             fwrite($linesHandle, pack('J', $offset));
+            fflush($linesHandle);
+            if (function_exists('fsync')) {
+                @fsync($linesHandle);
+            }
+
             $offset += strlen($line);
 
             $capturedAt = (string) $capture['captured_at'];
@@ -966,6 +976,10 @@ class CaptureIndex
             }
 
             fwrite($blockHandle, $payload);
+        fflush($blockHandle);
+        if (function_exists('fsync')) {
+            @fsync($blockHandle);
+        }
 
             $blocks[$station] = [
                 'offset' => $blockOffset,

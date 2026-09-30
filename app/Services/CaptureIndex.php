@@ -1013,10 +1013,33 @@ class CaptureIndex
             'station_aggregates' => $aggregates,
         ];
 
-        file_put_contents(
-            $this->pathIn($stagingDir, 'manifest.json'),
-            json_encode($manifest, JSON_UNESCAPED_UNICODE)
-        );
+        $this->retryFilePutContents($this->pathIn($stagingDir, 'manifest.json'), json_encode($manifest, JSON_UNESCAPED_UNICODE));
+
+    }
+
+    /**
+     * Attempt to write a file multiple times to reduce IO write failures.
+     *
+     * @param string $filename
+     * @param string $data
+     * @param int $attempts
+     * @param int $delayMs
+     * @return bool
+     */
+    protected function retryFilePutContents(string $filename, string $data, int $attempts = 3, int $delayMs = 100): bool
+    {
+        for ($i = 0; $i < $attempts; $i++) {
+            $result = @file_put_contents($filename, $data);
+
+            if ($result !== false) {
+                return true;
+            }
+
+            usleep($delayMs * 1000);
+        }
+
+        return false;
+    }
 
         if ($progress !== null) {
             $progress($filesSeen, 'done');

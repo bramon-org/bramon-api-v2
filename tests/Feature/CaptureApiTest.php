@@ -236,7 +236,7 @@ class CaptureApiTest extends TestCase
         $response->assertStatus(200)
             ->assertJsonPath('operador.id', 'op-ana')
             ->assertJsonPath('operador.name', 'Ana Silva')
-            ->assertJsonPath('operador.email', 'ana@bramonmeteor.org')
+            ->assertJsonPath('operador.email', 'ana.silva@bramonmeteor.org')
             ->assertJsonPath('operador.role', 'operator')
             ->assertJsonPath('operador.visible', true)
             ->assertJsonPath('operador.active', true)

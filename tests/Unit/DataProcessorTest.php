@@ -401,15 +401,16 @@ class DataProcessorTest extends TestCase
             'station_aggregates' => $aggregates,
         ]));
 
+        // CaptureIndex::exists() checks for these files
+        file_put_contents($dir . '/captures.ndjson', '');
+        file_put_contents($dir . '/captures.lines', '');
+
         $index = new CaptureIndex($dir);
 
-        $stationReader = null;
-
-        if ($stationsFile !== null) {
-            $file = tempnam(sys_get_temp_dir(), 'bramon_stations_') . '.json';
-            file_put_contents($file, json_encode($stationsFile));
-            $stationReader = new StationReader($file);
-        }
+        // Always create a stationReader, even if empty, so stationsFromIndex() can work
+        $file = tempnam(sys_get_temp_dir(), 'bramon_stations_') . '.json';
+        file_put_contents($file, json_encode($stationsFile ?? []));
+        $stationReader = new StationReader($file);
 
         $operatorReader = null;
 

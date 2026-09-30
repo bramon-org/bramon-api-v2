@@ -72,6 +72,19 @@ class StationController extends Controller
         $stations = $this->stationReader->getStations();
         $operators = $this->operatorReader->getOperators();
 
+        // Get capture counts from index if available
+        $captureCounts = [];
+        if ($this->index->exists()) {
+            $aggregates = $this->index->stationAggregates();
+            foreach ($aggregates as $stationName => $aggregate) {
+                $captureCounts[$stationName] = [
+                    'count' => $aggregate['count'] ?? 0,
+                    'first' => $aggregate['first'] ?? null,
+                    'last' => $aggregate['last'] ?? null,
+                ];
+            }
+        }
+
         $result = [];
         foreach ($stations as $station) {
             $name = $station['name'] ?? '';
@@ -81,6 +94,8 @@ class StationController extends Controller
             if ($activeOnly && !$isActive) {
                 continue;
             }
+
+            $captureData = $captureCounts[$name] ?? ['count' => 0, 'first' => null, 'last' => null];
 
             $result[] = [
                 'id' => $station['id'] ?? $station['codigo'] ?? $name,
@@ -92,8 +107,8 @@ class StationController extends Controller
                     'role' => $operator['role'] ?? $operator['funcao'] ?? null,
                     'visible' => $operator['visible'] ?? true,
                     'active' => true,
-                    'station_count' => 0,
-                    'stations' => [],
+                    'station_count' => count($this->operatorReader->getLinkedStationNames($operator, array_column($stations, 'name'))),
+                    'stations' => $this->operatorReader->getLinkedStationNames($operator, array_column($stations, 'name')),
                 ] : null,
                 'city' => $station['city'] ?? $station['cidade'] ?? null,
                 'state' => $station['state'] ?? $station['estado'] ?? null,
@@ -109,9 +124,9 @@ class StationController extends Controller
                 'camera_capture' => $station['camera_capture'] ?? null,
                 'active' => $isActive,
                 'visible' => $station['visible'] ?? true,
-                'capture_count' => 0,
-                'first_capture' => null,
-                'last_capture' => null,
+                'capture_count' => $captureData['count'],
+                'first_capture' => $captureData['first'],
+                'last_capture' => $captureData['last'],
             ];
         }
 
@@ -182,6 +197,19 @@ class StationController extends Controller
             if ($name === $stationName) {
                 $operator = $this->operatorReader->findOperatorForStation($name, $operators);
 
+                // Get capture count from index if available
+                $captureCount = 0;
+                $firstCapture = null;
+                $lastCapture = null;
+                if ($this->index->exists()) {
+                    $aggregate = $this->index->stationAggregate($stationName);
+                    if ($aggregate !== null) {
+                        $captureCount = $aggregate['count'] ?? 0;
+                        $firstCapture = $aggregate['first'] ?? null;
+                        $lastCapture = $aggregate['last'] ?? null;
+                    }
+                }
+
                 return response()->json(new StationResource([
                     'id' => $station['id'] ?? $station['codigo'] ?? $name,
                     'name' => $name,
@@ -189,11 +217,11 @@ class StationController extends Controller
                         'id' => $operator['id'] ?? $operator['sigla'] ?? '',
                         'name' => $operator['nome'] ?? $operator['name'] ?? '',
                         'email' => OperatorReader::emailFromName($operator['nome'] ?? $operator['name'] ?? ''),
-                        'role' => $operator['role'] ?? $operator['funcao'] ?? null,
+                        'role' => $operator['role'] ?? $operator['funcao'] ?? 'operator',
                         'visible' => $operator['visible'] ?? true,
                         'active' => true,
-                        'station_count' => 0,
-                        'stations' => [],
+                        'station_count' => count($this->operatorReader->getLinkedStationNames($operator, array_column($stations, 'name'))),
+                        'stations' => $this->operatorReader->getLinkedStationNames($operator, array_column($stations, 'name')),
                     ] : null,
                     'city' => $station['city'] ?? $station['cidade'] ?? null,
                     'state' => $station['state'] ?? $station['estado'] ?? null,
@@ -209,9 +237,9 @@ class StationController extends Controller
                     'camera_capture' => $station['camera_capture'] ?? null,
                     'active' => $operator !== null,
                     'visible' => $station['visible'] ?? true,
-                    'capture_count' => 0,
-                    'first_capture' => null,
-                    'last_capture' => null,
+                    'capture_count' => $captureCount,
+                    'first_capture' => $firstCapture,
+                    'last_capture' => $lastCapture,
                 ]));
             }
         }

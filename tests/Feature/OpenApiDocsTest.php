@@ -153,21 +153,32 @@ class OpenApiDocsTest extends TestCase
     {
         $spec = $this->spec();
 
-        $listingPaths = [
+        // Only capture-related endpoints depend on the index
+        $indexDependentPaths = [
             '/captures',
             '/captures/search',
-            '/stations',
-            '/stations/{stationName}',
             '/stations/{stationName}/captures',
             '/stations/{stationName}/stats',
-            '/operators',
-            '/operators/{operatorId}',
             '/stats',
         ];
 
-        foreach ($listingPaths as $path) {
+        foreach ($indexDependentPaths as $path) {
             $responses = $spec['paths'][$path]['get']['responses'];
             $this->assertArrayHasKey(503, $responses, "{$path} does not document 503 for a missing index");
+        }
+
+        // Stations and operators are read directly from JSON files,
+        // so they don't return 503 when the index is missing
+        $indexIndependentPaths = [
+            '/stations',
+            '/stations/{stationName}',
+            '/operators',
+            '/operators/{operatorId}',
+        ];
+
+        foreach ($indexIndependentPaths as $path) {
+            $responses = $spec['paths'][$path]['get']['responses'];
+            $this->assertArrayNotHasKey(503, $responses, "{$path} should not document 503 (reads from JSON files)");
         }
     }
 

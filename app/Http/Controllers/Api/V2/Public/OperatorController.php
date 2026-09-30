@@ -158,7 +158,7 @@ class OperatorController extends Controller
                     'id' => $id,
                     'name' => $operator['nome'] ?? $operator['name'] ?? '',
                     'email' => OperatorReader::emailFromName($operator['nome'] ?? $operator['name'] ?? ''),
-                    'role' => $operator['role'] ?? $operator['funcao'] ?? null,
+                    'role' => $operator['role'] ?? $operator['funcao'] ?? 'operator',
                     'visible' => $operator['visible'] ?? true,
                     'active' => count($linkedStations) > 0,
                     'station_count' => count($linkedStations),

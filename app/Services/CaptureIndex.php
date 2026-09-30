@@ -274,7 +274,17 @@ class CaptureIndex
     {
         $geolocation = $this->stationAggregate($station)['geolocation'] ?? null;
 
-        return is_array($geolocation) ? $geolocation : null;
+        if (!is_array($geolocation)) {
+            return null;
+        }
+
+        return [
+            'latitude' => (float) ($geolocation['latitude'] ?? 0),
+            'longitude' => (float) ($geolocation['longitude'] ?? 0),
+            'altitude' => isset($geolocation['altitude']) && is_numeric($geolocation['altitude'])
+                ? (float) $geolocation['altitude']
+                : null,
+        ];
     }
 
     /* ------------------------------------------------------------------ */

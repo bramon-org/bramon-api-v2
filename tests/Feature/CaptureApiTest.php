@@ -368,18 +368,27 @@ class CaptureApiTest extends TestCase
             ->assertJsonStructure(['message']);
     }
 
-    public function testEndpointsReturn503WhenIndexMissing(): void
+    public function testCaptureEndpointsReturn503WhenIndexMissing(): void
     {
         (new CaptureIndex($this->indexDir))->flush();
 
+        // Only capture-related endpoints depend on the index
         foreach ([
             '/api/v2/public/stats',
-            '/api/v2/public/stations',
-            '/api/v2/public/operators',
             '/api/v2/public/captures',
         ] as $endpoint) {
             $this->getJson($endpoint)->assertStatus(503);
         }
+    }
+
+    public function testOperatorAndStationEndpointsWorkWithoutIndex(): void
+    {
+        (new CaptureIndex($this->indexDir))->flush();
+
+        // Operators and stations are read directly from JSON files,
+        // so they work even without the capture index
+        $this->getJson('/api/v2/public/operators')->assertStatus(200);
+        $this->getJson('/api/v2/public/stations')->assertStatus(200);
     }
 
     protected function deleteTree(string $dir): void

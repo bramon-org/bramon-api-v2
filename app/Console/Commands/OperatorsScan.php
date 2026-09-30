@@ -74,7 +74,19 @@ class OperatorsScan extends Command
             : json_encode($operators, JSON_UNESCAPED_UNICODE);
 
         if ($json === false) {
-            $this->error('Failed to encode operators as JSON.');
+            $jsonError = json_last_error_msg();
+            $this->error("Failed to encode operators as JSON: {$jsonError}");
+
+            // Debug output. Try to find invalid data.
+            foreach ($operators as $index => $op) {
+                $check = json_encode($op, JSON_UNESCAPED_UNICODE);
+                if ($check === false) {
+                    $errorDetail = json_last_error_msg();
+                    $this->error("Error encoding operator at index {$index}: {$errorDetail}");
+                    $this->error(print_r($op, true));
+                    break;
+                }
+            }
 
             return Command::FAILURE;
         }

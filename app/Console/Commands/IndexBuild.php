@@ -77,9 +77,31 @@ class IndexBuild extends Command
                     } else {
                         $this->newLine();
                     }
+                    // Log stages
+                    $this->info("[IndexBuild] Stage: {$stage}, Files seen: {$filesSeen}");
                 },
                 $chunkSize
             );
+
+            if (empty($manifest)) {
+                $this->error('[IndexBuild] Manifest is empty after rebuild.');
+            } else {
+                $this->info('[IndexBuild] Manifest keys: ' . implode(', ', array_keys($manifest)));
+
+                $manifestJsonFile = $index->path('manifest.json');
+
+                if (!file_exists($manifestJsonFile)) {
+                    $this->error("[IndexBuild] Manifest file not found at {$manifestJsonFile}");
+                } else {
+                    $manifestContent = file_get_contents($manifestJsonFile);
+
+                    if ($manifestContent === false || strlen(trim($manifestContent)) === 0) {
+                        $this->error("[IndexBuild] Manifest file is empty or unreadable");
+                    } else {
+                        $this->info("[IndexBuild] Manifest file size: " . strlen($manifestContent) . " bytes");
+                    }
+                }
+            }
         } catch (Throwable $e) {
             $this->error('Index build failed: ' . $e->getMessage());
 

@@ -44,6 +44,13 @@ return [
     // memory on a constrained host; raise it on a larger machine for speed.
     'index_chunk_size' => env('BRAMON_INDEX_CHUNK_SIZE', 5000),
 
+    // Directory for temporary sort chunks during index building.
+    // Defaults to the system temp dir. On shared hosting (e.g. DreamHost)
+    // where sys_get_temp_dir() may be restricted or on a small partition,
+    // set this to a writable path inside your home directory, e.g.:
+    //   BRAMON_TEMP_DIR=/home/bramon_api/tmp
+    'temp_dir' => env('BRAMON_TEMP_DIR', sys_get_temp_dir()),
+
     'cache_ttl' => env('BRAMON_CACHE_TTL', 60),
 
     'max_results' => env('BRAMON_MAX_RESULTS', 1000),

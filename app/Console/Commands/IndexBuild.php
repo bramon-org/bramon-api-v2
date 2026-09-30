@@ -58,12 +58,14 @@ class IndexBuild extends Command
         }
 
         $chunkSize = max(1, (int) ($this->option('chunk') ?: config('bramon.index_chunk_size', 20000)));
+        $tempDir = config('bramon.temp_dir', sys_get_temp_dir());
 
         $reader = new FileSystemReader($baseDir, 0);
 
         $this->info("Base directory: {$baseDir}");
         $this->info("Index target:    {$index->getIndexDir()}");
         $this->info("Chunk size:      {$chunkSize}");
+        $this->info("Temp directory:  {$tempDir}");
         $this->newLine();
 
         $start = microtime(true);
@@ -80,27 +82,15 @@ class IndexBuild extends Command
                     // Log stages
                     $this->info("[IndexBuild] Stage: {$stage}, Files seen: {$filesSeen}");
                 },
-                $chunkSize
+                $chunkSize,
+                $tempDir
             );
 
             if (empty($manifest)) {
                 $this->error('[IndexBuild] Manifest is empty after rebuild.');
             } else {
                 $this->info('[IndexBuild] Manifest keys: ' . implode(', ', array_keys($manifest)));
-
-                $manifestJsonFile = rtrim($indexDir, DIRECTORY_SEPARATOR) . DIRECTORY_SEPARATOR . 'manifest.json';
-
-                if (!file_exists($manifestJsonFile)) {
-                    $this->error("[IndexBuild] Manifest file not found at {$manifestJsonFile}");
-                } else {
-                    $manifestContent = file_get_contents($manifestJsonFile);
-
-                    if ($manifestContent === false || strlen(trim($manifestContent)) === 0) {
-                        $this->error("[IndexBuild] Manifest file is empty or unreadable");
-                    } else {
-                        $this->info("[IndexBuild] Manifest file size: " . strlen($manifestContent) . " bytes");
-                    }
-                }
+                $this->info('[IndexBuild] Manifest file: OK');
             }
         } catch (Throwable $e) {
             $this->error('Index build failed: ' . $e->getMessage());

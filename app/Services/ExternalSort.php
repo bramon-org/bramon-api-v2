@@ -30,10 +30,13 @@ class ExternalSort
 
     protected int $totalAdded = 0;
 
-    public function __construct(int $chunkSize = 20000, bool $descending = true)
+    protected string $tempDir;
+
+    public function __construct(int $chunkSize = 20000, bool $descending = true, ?string $tempDir = null)
     {
         $this->chunkSize = max(1, $chunkSize);
         $this->descending = $descending;
+        $this->tempDir = $tempDir ?? sys_get_temp_dir();
     }
 
     /**
@@ -256,7 +259,13 @@ class ExternalSort
      */
     protected function tempPath(): string
     {
-        $dir = sys_get_temp_dir();
+        $dir = $this->tempDir;
+
+        if (!is_dir($dir)) {
+            if (!@mkdir($dir, 0700, true) && !is_dir($dir)) {
+                throw new RuntimeException("Temp directory does not exist and could not be created: {$dir}");
+            }
+        }
 
         if (!is_writable($dir)) {
             throw new RuntimeException("Temp directory is not writable: {$dir}");

@@ -414,6 +414,99 @@ class CaptureIndexTest extends TestCase
         $this->assertSame(0, $index->diskUsage());
     }
 
+    public function testRebuildLeavesNoStagingDirectoryBehind(): void
+    {
+        $this->buildIndex();
+
+        // A leftover staging directory means a build aborted midway and the
+        // next rebuild would stage into a second, orphaned tree.
+        $this->assertSame([], $this->stagingDirs());
+        $this->assertCount(5, $this->indexFiles());
+    }
+
+    public function testRebuildReplacesTheIndexInPlace(): void
+    {
+        $index = $this->buildIndex();
+        $this->assertSame(4, $index->totalCaptures());
+
+        // Add a capture to the tree and rebuild over the existing index, which
+        // is what the hourly schedule does.
+        $dir = $this->baseDir . '/TLP1/20250910';
+        @mkdir($dir, 0775, true);
+        file_put_contents($dir . '/M20250910_120000_TLP1_1.xml', '<ufocapture_record observer="Ana"/>');
+
+        $index->rebuild(new FileSystemReader($this->baseDir, 0), null, 100);
+
+        // A fresh reader has to see the new count, not the previous manifest.
+        $fresh = new CaptureIndex($this->indexDir);
+        $this->assertSame(5, $fresh->totalCaptures());
+        $this->assertCount(5, $this->indexFiles());
+        $this->assertSame([], $this->stagingDirs());
+    }
+
+    public function testAFailedRebuildLeavesThePreviousIndexIntact(): void
+    {
+        $index = $this->buildIndex();
+        $before = $this->indexFiles();
+
+        // A base directory that vanishes mid-request stands in for any build
+        // failure: the previous index must keep serving traffic.
+        $reader = new class($this->baseDir, 0) extends FileSystemReader
+        {
+            public function getFilesGenerator(bool $useCache = false): \Generator
+            {
+                throw new \RuntimeException('source tree disappeared');
+            }
+        };
+
+        try {
+            $index->rebuild($reader, null, 100);
+            $this->fail('Expected the rebuild to fail.');
+        } catch (\RuntimeException $e) {
+            $this->assertSame('source tree disappeared', $e->getMessage());
+        }
+
+        $this->assertSame($before, $this->indexFiles());
+        $this->assertSame([], $this->stagingDirs());
+
+        $fresh = new CaptureIndex($this->indexDir);
+        $this->assertTrue($fresh->exists());
+        $this->assertSame(4, $fresh->totalCaptures());
+    }
+
+    /**
+     * Names of the files that make up the live index.
+     *
+     * @return array<int,string>
+     */
+    protected function indexFiles(): array
+    {
+        $files = array_values(array_diff(scandir($this->indexDir) ?: [], ['.', '..']));
+        sort($files);
+
+        return $files;
+    }
+
+    /**
+     * Sibling directories a rebuild would have staged into.
+     *
+     * @return array<int,string>
+     */
+    protected function stagingDirs(): array
+    {
+        $parent = dirname($this->indexDir);
+        $prefix = basename($this->indexDir) . '.building-';
+
+        $found = array_values(array_filter(
+            scandir($parent) ?: [],
+            static fn (string $entry): bool => str_starts_with($entry, $prefix)
+        ));
+
+        sort($found);
+
+        return $found;
+    }
+
     public function testNonCaptureFilesAreIgnored(): void
     {
         file_put_contents($this->baseDir . '/readme.txt', 'ignore me');

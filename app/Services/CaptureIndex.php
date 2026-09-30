@@ -29,6 +29,22 @@ class CaptureIndex
     /** Bumped whenever the on-disk layout changes. */
     public const VERSION = 4;
 
+    /**
+     * The artefacts a complete index consists of.
+     *
+     * The manifest is listed last on purpose: a rebuild writes every file to a
+     * staging directory and renames them into place in this order, so the files
+     * that back a listing are complete before the manifest that counts them
+     * becomes visible.
+     */
+    public const FILES = [
+        'captures.ndjson',
+        'captures.lines',
+        'by-station.ndjson',
+        'station-blocks.json',
+        'manifest.json',
+    ];
+
     /** Magic bytes prefix for the fixed-width offset table. */
     private const OFFSET_BYTES = 8;
 
@@ -66,7 +82,24 @@ class CaptureIndex
 
     protected function path(string $file): string
     {
-        return $this->indexDir . '/' . $file;
+        return $this->pathIn($this->indexDir, $file);
+    }
+
+    protected function pathIn(string $dir, string $file): string
+    {
+        return rtrim($dir, '/') . '/' . $file;
+    }
+
+    /**
+     * Directory a rebuild writes to before publishing.
+     *
+     * Kept beside the live index so the publishing renames stay within a single
+     * filesystem, and suffixed with the pid so a manual run and a scheduled one
+     * can never stage into the same place.
+     */
+    protected function stagingDir(): string
+    {
+        return $this->indexDir . '.building-' . getmypid();
     }
 
     public function manifestPath(): string
@@ -261,7 +294,20 @@ class CaptureIndex
 
         $size = @filesize($linesFile);
 
-        return $size === false ? 0 : intdiv((int) $size, self::OFFSET_BYTES);
+        if ($size === false) {
+            return 0;
+        }
+
+        $count = intdiv((int) $size, self::OFFSET_BYTES);
+
+        // A rebuild renames the offset table and the manifest in sequence, so a
+        // request landing between the two can read a manifest that counts a
+        // different number of lines than the table on disk. Trust the smaller
+        // of the two: over-counting would page past the end of the file, while
+        // under-counting only shortens the last page.
+        $declared = $this->totalCaptures();
+
+        return $declared > 0 ? min($count, $declared) : $count;
     }
 
     /**
@@ -711,6 +757,12 @@ class CaptureIndex
     /**
      * Rebuild the index from the captures directory using bounded memory.
      *
+     * The index is staged beside the live one and renamed into place only once
+     * every artefact is complete. Truncating the live files in place instead
+     * would let a request landing mid-rebuild read a half-written offset table:
+     * `exists()` would still be true, so the listing would answer with a wrong
+     * total and short or undecodable records instead of failing cleanly.
+     *
      * @param  callable|null  $progress  Receives (int $filesSeen, string $stage).
      * @return array<string,mixed> Summary written to the manifest.
      */
@@ -724,6 +776,31 @@ class CaptureIndex
             throw new RuntimeException("Index directory is not writable: {$this->indexDir}");
         }
 
+        $stagingDir = $this->stagingDir();
+
+        if (!@mkdir($stagingDir, 0775, true) && !is_dir($stagingDir)) {
+            throw new RuntimeException("Unable to create staging directory: {$stagingDir}");
+        }
+
+        try {
+            $manifest = $this->build($reader, $progress, $chunkSize, $stagingDir);
+            $this->publish($stagingDir);
+        } finally {
+            // Whether the build or the publish failed, the previous index has to
+            // keep serving traffic: only the staging directory is abandoned.
+            $this->discardStaging($stagingDir);
+        }
+
+        return $manifest;
+    }
+
+    /**
+     * Write a complete index into $stagingDir without touching the live one.
+     *
+     * @return array<string,mixed> Summary destined for the manifest.
+     */
+    protected function build(FileSystemReader $reader, ?callable $progress, int $chunkSize, string $stagingDir): array
+    {
         // Pass 1: stream files, coalescing them into captures. Spill sorted
         // chunks so the whole capture set is never held in memory.
         $sorter = new ExternalSort($chunkSize, true);
@@ -774,8 +851,8 @@ class CaptureIndex
         }
 
         // Pass 2: write the sorted stream, offset table and station blocks.
-        $capturesHandle = @fopen($this->capturesPath(), 'wb');
-        $linesHandle = @fopen($this->linesPath(), 'wb');
+        $capturesHandle = @fopen($this->pathIn($stagingDir, 'captures.ndjson'), 'wb');
+        $linesHandle = @fopen($this->pathIn($stagingDir, 'captures.lines'), 'wb');
 
         if ($capturesHandle === false || $linesHandle === false) {
             throw new RuntimeException("Unable to open index output files in {$this->indexDir}");
@@ -861,7 +938,10 @@ class CaptureIndex
             $lineIndex++;
         }
 
+        $this->sync($capturesHandle);
         fclose($capturesHandle);
+
+        $this->sync($linesHandle);
         fclose($linesHandle);
 
         unset($metadataFacts);
@@ -873,7 +953,7 @@ class CaptureIndex
         // Station blocks: write each station's line indices contiguously so a
         // station page can be answered with two seeks.
         $blocks = [];
-        $blockHandle = @fopen($this->byStationPath(), 'wb');
+        $blockHandle = @fopen($this->pathIn($stagingDir, 'by-station.ndjson'), 'wb');
         $blockOffset = 0;
 
         ksort($aggregates);
@@ -895,12 +975,13 @@ class CaptureIndex
             $blockOffset += strlen($payload);
         }
 
+        $this->sync($blockHandle);
         fclose($blockHandle);
 
         unset($byStationRecords);
 
         @file_put_contents(
-            $this->stationBlocksPath(),
+            $this->pathIn($stagingDir, 'station-blocks.json'),
             json_encode($blocks, JSON_UNESCAPED_UNICODE)
         );
 
@@ -918,19 +999,72 @@ class CaptureIndex
             'station_aggregates' => $aggregates,
         ];
 
-        @file_put_contents(
-            $this->manifestPath(),
+        file_put_contents(
+            $this->pathIn($stagingDir, 'manifest.json'),
             json_encode($manifest, JSON_UNESCAPED_UNICODE)
         );
-
-        $this->manifest = $manifest;
-        $this->stationAggregates = $aggregates;
 
         if ($progress !== null) {
             $progress($filesSeen, 'done');
         }
 
         return $manifest;
+    }
+
+    /**
+     * Rename the staged artefacts into the live index.
+     *
+     * `rename()` within a directory is atomic, so a concurrent reader opens
+     * either the old file or the new one and never a partially written one.
+     * `self::FILES` puts the manifest last, so the files backing a listing are
+     * complete before the manifest that counts them becomes visible.
+     */
+    protected function publish(string $stagingDir): void
+    {
+        foreach (self::FILES as $file) {
+            $from = $this->pathIn($stagingDir, $file);
+            $to = $this->path($file);
+
+            if (!is_file($from)) {
+                continue;
+            }
+
+            if (!@rename($from, $to)) {
+                throw new RuntimeException("Unable to publish index file: {$to}");
+            }
+        }
+
+        $this->manifest = null;
+        $this->stationAggregates = null;
+    }
+
+    /**
+     * Remove a staging directory and anything left in it.
+     */
+    protected function discardStaging(string $stagingDir): void
+    {
+        if (!is_dir($stagingDir)) {
+            return;
+        }
+
+        foreach (self::FILES as $file) {
+            @unlink($this->pathIn($stagingDir, $file));
+        }
+
+        @rmdir($stagingDir);
+    }
+
+    /**
+     * Flush a write handle to disk before it is closed.
+     *
+     * Without this the kernel may still hold the tail of a large file, and a
+     * rename that follows could publish a file that is short on disk.
+     */
+    protected function sync(mixed $handle): void
+    {
+        if (is_resource($handle) && function_exists('fsync')) {
+            @fsync($handle);
+        }
     }
 
     /**
@@ -1132,7 +1266,7 @@ class CaptureIndex
      */
     public function flush(): void
     {
-        foreach (['manifest.json', 'captures.ndjson', 'captures.lines', 'by-station.ndjson', 'station-blocks.json'] as $file) {
+        foreach (self::FILES as $file) {
             $path = $this->path($file);
 
             if (is_file($path)) {
@@ -1151,7 +1285,7 @@ class CaptureIndex
     {
         $bytes = 0;
 
-        foreach (['manifest.json', 'captures.ndjson', 'captures.lines', 'by-station.ndjson', 'station-blocks.json'] as $file) {
+        foreach (self::FILES as $file) {
             $path = $this->path($file);
 
             if (is_file($path)) {

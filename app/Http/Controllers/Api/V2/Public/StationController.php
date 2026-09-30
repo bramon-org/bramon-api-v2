@@ -9,22 +9,23 @@ use App\Http\Resources\Api\V2\Public\CaptureResource;
 use App\Http\Resources\Api\V2\Public\PaginatedResource;
 use App\Http\Resources\Api\V2\Public\StationResource;
 use App\Services\CaptureIndex;
-use App\Services\DataProcessor;
+use App\Services\OperatorReader;
+use App\Services\StationReader;
 use Illuminate\Http\JsonResponse;
 use OpenApi\Attributes as OA;
 
 /**
  * Station endpoints.
  *
- * All responses are served from the prebuilt CaptureIndex. Station listing and
- * lookups previously materialised every file in the captures tree, which
- * exhausted the PHP memory limit; now request memory scales with the page size
- * and the number of stations instead.
+ * Station listing and lookups are read directly from stations.json
+ * (BRAMON_STATIONS_FILE), independent of the capture index. Only the
+ * capture-related endpoints (captures, stats) require the prebuilt index.
  */
 class StationController extends Controller
 {
     public function __construct(
-        protected DataProcessor $dataProcessor,
+        protected StationReader $stationReader,
+        protected OperatorReader $operatorReader,
         protected CaptureIndex $index
     ) {}
 
@@ -67,26 +68,62 @@ class StationController extends Controller
         $perPage = $this->perPage($request->integer('per_page', 15));
         $activeOnly = $request->boolean('active_only', false);
 
-        if (!$this->index->exists()) {
-            return $this->indexMissingResponse();
+        // Read stations directly from stations.json (BRAMON_STATIONS_FILE)
+        $stations = $this->stationReader->getStations();
+        $operators = $this->operatorReader->getOperators();
+
+        $result = [];
+        foreach ($stations as $station) {
+            $name = $station['name'] ?? '';
+            $operator = $this->operatorReader->findOperatorForStation($name, $operators);
+            $isActive = $operator !== null;
+
+            if ($activeOnly && !$isActive) {
+                continue;
+            }
+
+            $result[] = [
+                'id' => $station['id'] ?? $station['codigo'] ?? $name,
+                'name' => $name,
+                'operador' => $operator ? [
+                    'id' => $operator['id'] ?? $operator['sigla'] ?? '',
+                    'name' => $operator['nome'] ?? $operator['name'] ?? '',
+                    'email' => OperatorReader::emailFromName($operator['nome'] ?? $operator['name'] ?? ''),
+                    'role' => $operator['role'] ?? $operator['funcao'] ?? null,
+                    'visible' => $operator['visible'] ?? true,
+                    'active' => true,
+                    'station_count' => 0,
+                    'stations' => [],
+                ] : null,
+                'city' => $station['city'] ?? $station['cidade'] ?? null,
+                'state' => $station['state'] ?? $station['estado'] ?? null,
+                'country' => $station['country'] ?? $station['pais'] ?? null,
+                'latitude' => $station['latitude'] ?? null,
+                'longitude' => $station['longitude'] ?? null,
+                'altitude' => $station['altitude'] ?? null,
+                'azimuth' => $station['azimuth'] ?? null,
+                'elevation' => $station['elevation'] ?? null,
+                'fov' => $station['fov'] ?? null,
+                'camera_model' => $station['camera_model'] ?? null,
+                'camera_lens' => $station['camera_lens'] ?? null,
+                'camera_capture' => $station['camera_capture'] ?? null,
+                'active' => $isActive,
+                'visible' => $station['visible'] ?? true,
+                'capture_count' => 0,
+                'first_capture' => null,
+                'last_capture' => null,
+            ];
         }
 
-        // Station count is bounded (hundreds), so building the list here is
-        // cheap; only the capture scan used to be unbounded.
-        $stations = $this->dataProcessor->stationsFromIndex($this->index);
+        // Sort by name
+        usort($result, fn($a, $b) => strcmp($a['name'], $b['name']));
 
-        if ($activeOnly) {
-            $stations = array_filter($stations, fn($s) => $s['active']);
-        }
-
-        $stations = array_values($stations);
-
-        $total = count($stations);
+        $total = count($result);
         $totalPages = (int) ceil($total / $perPage);
         $start = ($page - 1) * $perPage;
 
         $resource = new PaginatedResource(
-            StationResource::collection(array_slice($stations, $start, $perPage))->resolve(),
+            StationResource::collection(array_slice($result, $start, $perPage))->resolve(),
             $total,
             $page,
             $perPage,
@@ -136,25 +173,50 @@ class StationController extends Controller
     )]
     public function show(string $stationName): JsonResponse
     {
-        if (!$this->index->exists()) {
-            return $this->indexMissingResponse();
-        }
-
-        $aggregate = $this->index->stationAggregate($stationName);
-
-        if ($aggregate === null) {
-            return response()->json(['detail' => 'Estação não encontrada'], 404);
-        }
-
-        $stations = $this->dataProcessor->stationsFromIndex($this->index);
+        // Read station directly from stations.json (BRAMON_STATIONS_FILE)
+        $stations = $this->stationReader->getStations();
+        $operators = $this->operatorReader->getOperators();
 
         foreach ($stations as $station) {
-            if ($station['name'] === $stationName) {
-                return response()->json(new StationResource($station));
+            $name = $station['name'] ?? '';
+            if ($name === $stationName) {
+                $operator = $this->operatorReader->findOperatorForStation($name, $operators);
+
+                return response()->json(new StationResource([
+                    'id' => $station['id'] ?? $station['codigo'] ?? $name,
+                    'name' => $name,
+                    'operador' => $operator ? [
+                        'id' => $operator['id'] ?? $operator['sigla'] ?? '',
+                        'name' => $operator['nome'] ?? $operator['name'] ?? '',
+                        'email' => OperatorReader::emailFromName($operator['nome'] ?? $operator['name'] ?? ''),
+                        'role' => $operator['role'] ?? $operator['funcao'] ?? null,
+                        'visible' => $operator['visible'] ?? true,
+                        'active' => true,
+                        'station_count' => 0,
+                        'stations' => [],
+                    ] : null,
+                    'city' => $station['city'] ?? $station['cidade'] ?? null,
+                    'state' => $station['state'] ?? $station['estado'] ?? null,
+                    'country' => $station['country'] ?? $station['pais'] ?? null,
+                    'latitude' => $station['latitude'] ?? null,
+                    'longitude' => $station['longitude'] ?? null,
+                    'altitude' => $station['altitude'] ?? null,
+                    'azimuth' => $station['azimuth'] ?? null,
+                    'elevation' => $station['elevation'] ?? null,
+                    'fov' => $station['fov'] ?? null,
+                    'camera_model' => $station['camera_model'] ?? null,
+                    'camera_lens' => $station['camera_lens'] ?? null,
+                    'camera_capture' => $station['camera_capture'] ?? null,
+                    'active' => $operator !== null,
+                    'visible' => $station['visible'] ?? true,
+                    'capture_count' => 0,
+                    'first_capture' => null,
+                    'last_capture' => null,
+                ]));
             }
         }
 
-        return response()->json(['detail' => 'Estação não encontrada'], 404);
+        return response()->json(['detail' => 'Estação não encontrado'], 404);
     }
 
     /**

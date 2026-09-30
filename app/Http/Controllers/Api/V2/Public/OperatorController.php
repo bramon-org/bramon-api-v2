@@ -6,23 +6,23 @@ use App\Http\Controllers\Controller;
 use App\Http\Requests\Api\V2\Public\OperatorListRequest;
 use App\Http\Resources\Api\V2\Public\OperatorResource;
 use App\Http\Resources\Api\V2\Public\PaginatedResource;
-use App\Services\CaptureIndex;
-use App\Services\DataProcessor;
+use App\Services\OperatorReader;
+use App\Services\StationReader;
 use Illuminate\Http\JsonResponse;
 use OpenApi\Attributes as OA;
 
 /**
  * Operator endpoints.
  *
- * Operators are derived from operators.json and only need the station name
- * list, so these routes read the small station manifest rather than scanning
- * the captures tree (which is what exhausted the memory limit).
+ * Operators are read directly from operators.json (BRAMON_OPERATORS_FILE),
+ * independent of the capture index. Station names are resolved from
+ * stations.json (BRAMON_STATIONS_FILE).
  */
 class OperatorController extends Controller
 {
     public function __construct(
-        protected DataProcessor $dataProcessor,
-        protected CaptureIndex $index
+        protected OperatorReader $operatorReader,
+        protected StationReader $stationReader
     ) {}
 
     /**
@@ -60,29 +60,43 @@ class OperatorController extends Controller
     )]
     public function index(OperatorListRequest $request): JsonResponse
     {
-        if (!$this->index->exists()) {
-            return $this->indexMissingResponse();
-        }
-
         $page = max(1, $request->integer('page', 1));
         $perPage = $this->perPage($request->integer('per_page', 15));
         $activeOnly = $request->boolean('active_only', false);
 
-        $stations = $this->dataProcessor->stationsFromIndex($this->index);
-        $operators = $this->dataProcessor->processOperators($stations);
+        $operators = $this->operatorReader->getOperators();
+        $stations = $this->stationReader->getStationsIndexed();
 
-        if ($activeOnly) {
-            $operators = array_filter($operators, fn($o) => $o['active']);
+        $result = [];
+        foreach ($operators as $operator) {
+            $linkedStations = $this->operatorReader->getLinkedStations($operator, $stations);
+            $isActive = count($linkedStations) > 0;
+
+            if ($activeOnly && !$isActive) {
+                continue;
+            }
+
+            $result[] = [
+                'id' => $operator['id'] ?? $operator['sigla'] ?? '',
+                'name' => $operator['nome'] ?? $operator['name'] ?? '',
+                'email' => OperatorReader::emailFromName($operator['nome'] ?? $operator['name'] ?? ''),
+                'role' => $operator['role'] ?? $operator['funcao'] ?? null,
+                'visible' => $operator['visible'] ?? true,
+                'active' => $isActive,
+                'station_count' => count($linkedStations),
+                'stations' => $linkedStations,
+                'latitude' => $operator['latitude'] ?? null,
+                'longitude' => $operator['longitude'] ?? null,
+                'altitude' => $operator['altitude'] ?? null,
+            ];
         }
 
-        $operators = array_values($operators);
-
-        $total = count($operators);
+        $total = count($result);
         $totalPages = (int) ceil($total / $perPage);
         $start = ($page - 1) * $perPage;
 
         $resource = new PaginatedResource(
-            OperatorResource::collection(array_slice($operators, $start, $perPage))->resolve(),
+            OperatorResource::collection(array_slice($result, $start, $perPage))->resolve(),
             $total,
             $page,
             $perPage,
@@ -132,16 +146,27 @@ class OperatorController extends Controller
     )]
     public function show(string $operatorId): JsonResponse
     {
-        if (!$this->index->exists()) {
-            return $this->indexMissingResponse();
-        }
-
-        $stations = $this->dataProcessor->stationsFromIndex($this->index);
-        $operators = $this->dataProcessor->processOperators($stations);
+        $operators = $this->operatorReader->getOperators();
+        $stations = $this->stationReader->getStationsIndexed();
 
         foreach ($operators as $operator) {
-            if ($operator['id'] === $operatorId) {
-                return response()->json(new OperatorResource($operator));
+            $id = $operator['id'] ?? $operator['sigla'] ?? '';
+            if ($id === $operatorId) {
+                $linkedStations = $this->operatorReader->getLinkedStations($operator, $stations);
+
+                return response()->json(new OperatorResource([
+                    'id' => $id,
+                    'name' => $operator['nome'] ?? $operator['name'] ?? '',
+                    'email' => OperatorReader::emailFromName($operator['nome'] ?? $operator['name'] ?? ''),
+                    'role' => $operator['role'] ?? $operator['funcao'] ?? null,
+                    'visible' => $operator['visible'] ?? true,
+                    'active' => count($linkedStations) > 0,
+                    'station_count' => count($linkedStations),
+                    'stations' => $linkedStations,
+                    'latitude' => $operator['latitude'] ?? null,
+                    'longitude' => $operator['longitude'] ?? null,
+                    'altitude' => $operator['altitude'] ?? null,
+                ]));
             }
         }
 
@@ -154,15 +179,5 @@ class OperatorController extends Controller
     protected function perPage(int $requested): int
     {
         return max(1, min($requested, 100));
-    }
-
-    /**
-     * Actionable response when the index has not been built yet.
-     */
-    protected function indexMissingResponse(): JsonResponse
-    {
-        return response()->json([
-            'detail' => 'Índice de capturas não construído. Execute: php artisan bramon:index',
-        ], 503);
     }
 }

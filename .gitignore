@@ -35,3 +35,10 @@ capturas
 # Runtime session and cache files
 /storage/framework/sessions/*
 /storage/framework/cache/data/*
+composer.phar
+public/.dh-diag
+public/favicon.gif
+public/favicon.ico
+storage/index/
+storage/operators.json
+storage/stations.json

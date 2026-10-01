@@ -834,8 +834,20 @@ class CaptureIndex
 
             $key = "{$file['station']}_{$file['date']}_{$file['time']}";
 
-            if (($file['type'] ?? null) === 'metadata' && !isset($metadataFacts[$key]) && isset($file['path'])) {
-                $metadataFacts[$key] = $this->readMetadataFacts($file['path']);
+            if (($file['type'] ?? null) === 'metadata' && isset($file['path'])) {
+                $facts = $this->readMetadataFacts($file['path']);
+                if (!isset($metadataFacts[$key])) {
+                    $metadataFacts[$key] = $facts;
+                } else {
+                    // Merge operator: prefer non-null operator from any file
+                    if ($metadataFacts[$key]['operator'] === null && $facts['operator'] !== null) {
+                        $metadataFacts[$key]['operator'] = $facts['operator'];
+                    }
+                    // Merge geolocation: prefer non-null geolocation from any file
+                    if ($metadataFacts[$key]['geolocation'] === null && $facts['geolocation'] !== null) {
+                        $metadataFacts[$key]['geolocation'] = $facts['geolocation'];
+                    }
+                }
             }
 
             if (!isset($pending[$key])) {

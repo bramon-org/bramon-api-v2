@@ -5,6 +5,7 @@ namespace App\Providers;
 use App\Services\CaptureIndex;
 use App\Services\DataProcessor;
 use App\Services\FileSystemReader;
+use App\Services\GeocodingService;
 use App\Services\OperatorReader;
 use App\Services\StationReader;
 use Illuminate\Support\Facades\Config;
@@ -32,6 +33,11 @@ class AppServiceProvider extends ServiceProvider
             return new StationReader(Config::get('bramon.stations_file'));
         });
 
+        // Register GeocodingService as singleton
+        $this->app->singleton(GeocodingService::class, function ($app) {
+            return new GeocodingService();
+        });
+
         // Register CaptureIndex as singleton.
         // Listing endpoints read this prebuilt index so they never have to
         // walk the captures tree, which keeps request memory flat.
@@ -50,7 +56,8 @@ class AppServiceProvider extends ServiceProvider
                 $app->make(StationReader::class),
                 // Lets a station without an operators.json entry be described by
                 // the operator its captures actually recorded.
-                $app->make(CaptureIndex::class)
+                $app->make(CaptureIndex::class),
+                $app->make(GeocodingService::class)
             );
         });
     }

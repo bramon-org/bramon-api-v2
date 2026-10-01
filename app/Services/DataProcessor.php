@@ -8,17 +8,20 @@ class DataProcessor
     protected ?OperatorReader $operatorReader;
     protected ?StationReader $stationReader;
     protected ?CaptureIndex $index;
+    protected ?GeocodingService $geocodingService;
 
     public function __construct(
         FileSystemReader $fileReader,
         ?OperatorReader $operatorReader = null,
         ?StationReader $stationReader = null,
-        ?CaptureIndex $index = null
+        ?CaptureIndex $index = null,
+        ?GeocodingService $geocodingService = null
     ) {
         $this->fileReader = $fileReader;
         $this->operatorReader = $operatorReader;
         $this->stationReader = $stationReader;
         $this->index = $index;
+        $this->geocodingService = $geocodingService;
     }
 
     /**
@@ -436,23 +439,47 @@ class DataProcessor
      */
     protected function buildStationFromData(string $stationName, ?array $stationData, ?array $aggregate, ?array $geolocation = null, ?array $operatorFromMetadata = null, ?array $cameraParams = null): array
     {
+        // Determine city/state: use curated data if available, otherwise reverse geocode from measured geolocation
+        $city = $stationData['city'] ?? 'Unknown';
+        $state = $stationData['state'] ?? 'Unknown';
+        $country = $stationData['country'] ?? 'BR';
+
+        // If city/state are unknown but we have measured geolocation, try reverse geocoding
+        if (($city === 'Unknown' || $state === 'Unknown') && $geolocation !== null) {
+            $latitude = $this->measuredFloat($geolocation, 'latitude');
+            $longitude = $this->measuredFloat($geolocation, 'longitude');
+            
+            if ($latitude !== null && $longitude !== null && $this->geocodingService !== null) {
+                $geoResult = $this->geocodingService->reverseGeocode($latitude, $longitude);
+                if ($city === 'Unknown') {
+                    $city = $geoResult['city'];
+                }
+                if ($state === 'Unknown') {
+                    $state = $geoResult['state'];
+                }
+                if ($country === 'BR' && isset($geoResult['country'])) {
+                    $country = $geoResult['country'];
+                }
+            }
+        }
+
         return [
             'id' => $stationData['id'] ?? substr(md5($stationName), 0, 32),
             'name' => $stationName,
             'operador' => null,
             'operator_from_metadata' => $operatorFromMetadata,
-            'city' => $stationData['city'] ?? 'Unknown',
-            'state' => $stationData['state'] ?? 'Unknown',
-            'country' => $stationData['country'] ?? 'BR',
+            'city' => $city,
+            'state' => $state,
+            'country' => $country,
             'latitude' => $this->measuredFloat($geolocation, 'latitude') ?? (float) ($stationData['latitude'] ?? 0),
             'longitude' => $this->measuredFloat($geolocation, 'longitude') ?? (float) ($stationData['longitude'] ?? 0),
             'altitude' => $this->measuredFloat($geolocation, 'altitude') ?? $this->curatedAltitude($stationData),
             'azimuth' => $cameraParams['azimuth'] ?? (float) ($stationData['azimuth'] ?? 0),
             'elevation' => $cameraParams['elevation'] ?? (float) ($stationData['elevation'] ?? 0),
             'fov' => $cameraParams['fov'] ?? (float) ($stationData['fov'] ?? 0),
-            'camera_model' => $stationData['camera_model'] ?? 'Unknown',
-            'camera_lens' => $stationData['camera_lens'] ?? 'Unknown',
-            'camera_capture' => $stationData['camera_capture'] ?? 'Unknown',
+            'camera_model' => $cameraParams['model'] ?? $stationData['camera_model'] ?? 'Unknown',
+            'camera_lens' => $cameraParams['lens'] ?? $stationData['camera_lens'] ?? 'Unknown',
+            'camera_capture' => $cameraParams['capture'] ?? $stationData['camera_capture'] ?? 'Unknown',
             'active' => (bool) ($stationData['active'] ?? true),
             'visible' => (bool) ($stationData['visible'] ?? true),
             'capture_count' => (int) ($aggregate['capture_count'] ?? 0),
@@ -633,13 +660,37 @@ class DataProcessor
     {
         $geolocation = is_array($aggregate['geolocation'] ?? null) ? $aggregate['geolocation'] : null;
 
+        // Determine city/state: use curated data if available, otherwise reverse geocode from measured geolocation
+        $city = $stationData['city'] ?? 'Unknown';
+        $state = $stationData['state'] ?? 'Unknown';
+        $country = $stationData['country'] ?? 'BR';
+
+        // If city/state are unknown but we have measured geolocation, try reverse geocoding
+        if (($city === 'Unknown' || $state === 'Unknown') && $geolocation !== null) {
+            $latitude = $this->measuredFloat($geolocation, 'latitude');
+            $longitude = $this->measuredFloat($geolocation, 'longitude');
+            
+            if ($latitude !== null && $longitude !== null && $this->geocodingService !== null) {
+                $geoResult = $this->geocodingService->reverseGeocode($latitude, $longitude);
+                if ($city === 'Unknown') {
+                    $city = $geoResult['city'];
+                }
+                if ($state === 'Unknown') {
+                    $state = $geoResult['state'];
+                }
+                if ($country === 'BR' && isset($geoResult['country'])) {
+                    $country = $geoResult['country'];
+                }
+            }
+        }
+
         return [
             'id' => $stationData['id'] ?? substr(md5($stationName), 0, 32),
             'name' => $stationName,
             'operador' => null,
-            'city' => $stationData['city'] ?? 'Unknown',
-            'state' => $stationData['state'] ?? 'Unknown',
-            'country' => $stationData['country'] ?? 'BR',
+            'city' => $city,
+            'state' => $state,
+            'country' => $country,
             'latitude' => $this->measuredFloat($geolocation, 'latitude') ?? (float) ($stationData['latitude'] ?? 0),
             'longitude' => $this->measuredFloat($geolocation, 'longitude') ?? (float) ($stationData['longitude'] ?? 0),
             'altitude' => $this->measuredFloat($geolocation, 'altitude') ?? $this->curatedAltitude($stationData),
@@ -691,7 +742,7 @@ class DataProcessor
      * Extracts data from the <ufocapture_record> tag in the metadata file.
      * Returns an array with geolocation, operator, and camera keys.
      *
-     * @return array{geolocation:?array{latitude:float,longitude:float,altitude:?float}, operator:?array{id:string,name:string,email:string}, camera:?array{azimuth:float,elevation:float,fov:float}}
+     * @return array{geolocation:?array{latitude:float,longitude:float,altitude:?float}, operator:?array{id:string,name:string,email:string}, camera:?array{azimuth:float,elevation:float,fov:float,model:string,lens:string,capture:string}}
      */
     protected function readMetadataFacts(string $path): array
     {
@@ -762,17 +813,23 @@ class DataProcessor
             ];
         }
 
-        // Extract camera params (azimuth, elevation, fov)
+        // Extract camera params (azimuth, elevation, fov, model, lens, capture)
         $camera = null;
         $hasAz = preg_match('/\baz="([^"]*)"/', $tag, $azMatch) === 1;
         $hasEl = preg_match('/\bel="([^"]*)"/', $tag, $elMatch) === 1;
         $hasFov = preg_match('/\bfov="([^"]*)"/', $tag, $fovMatch) === 1;
+        $hasCam = preg_match('/\bcam="([^"]*)"/', $tag, $camMatch) === 1;
+        $hasLens = preg_match('/\blens="([^"]*)"/', $tag, $lensMatch) === 1;
+        $hasCap = preg_match('/\bcap="([^"]*)"/', $tag, $capMatch) === 1;
 
-        if ($hasAz || $hasEl || $hasFov) {
+        if ($hasAz || $hasEl || $hasFov || $hasCam || $hasLens || $hasCap) {
             $camera = [
                 'azimuth' => $hasAz && is_numeric(trim($azMatch[1])) ? (float) trim($azMatch[1]) : 0.0,
                 'elevation' => $hasEl && is_numeric(trim($elMatch[1])) ? (float) trim($elMatch[1]) : 0.0,
                 'fov' => $hasFov && is_numeric(trim($fovMatch[1])) ? (float) trim($fovMatch[1]) : 0.0,
+                'model' => $hasCam ? trim($camMatch[1]) : 'Unknown',
+                'lens' => $hasLens ? trim($lensMatch[1]) : 'Unknown',
+                'capture' => $hasCap ? trim($capMatch[1]) : 'Unknown',
             ];
         }
 

@@ -304,6 +304,7 @@ class DataProcessor
     {
         $stations = [];
         $stationData = [];
+        $latestCapture = []; // station => [date, time, metadata_path]
 
         // Stream files from the filesystem, aggregating by station
         foreach ($this->fileReader->getFilesGenerator(false) as $file) {
@@ -326,19 +327,60 @@ class DataProcessor
                     'first_capture' => $capturedAt,
                     'last_capture' => $capturedAt,
                 ];
-                continue;
+            } else {
+                $stationData[$station]['capture_count']++;
+
+                if ($capturedAt !== null) {
+                    if ($stationData[$station]['first_capture'] === null || $capturedAt < $stationData[$station]['first_capture']) {
+                        $stationData[$station]['first_capture'] = $capturedAt;
+                    }
+
+                    if ($stationData[$station]['last_capture'] === null || $capturedAt > $stationData[$station]['last_capture']) {
+                        $stationData[$station]['last_capture'] = $capturedAt;
+                    }
+                }
             }
 
-            $stationData[$station]['capture_count']++;
-
-            if ($capturedAt !== null) {
-                if ($stationData[$station]['first_capture'] === null || $capturedAt < $stationData[$station]['first_capture']) {
-                    $stationData[$station]['first_capture'] = $capturedAt;
+            // Track latest capture with metadata for geolocation and camera params
+            if (($file['type'] ?? null) === 'metadata' && isset($file['path'])) {
+                $date = $file['date'];
+                $time = $file['time'];
+                
+                if (!isset($latestCapture[$station])) {
+                    $latestCapture[$station] = [
+                        'date' => $date,
+                        'time' => $time,
+                        'metadata_path' => $file['path'],
+                    ];
+                } else {
+                    // Compare dates/times to find the most recent
+                    $currentKey = $latestCapture[$station]['date'] . $latestCapture[$station]['time'];
+                    $newKey = $date . $time;
+                    if ($newKey > $currentKey) {
+                        $latestCapture[$station] = [
+                            'date' => $date,
+                            'time' => $time,
+                            'metadata_path' => $file['path'],
+                        ];
+                    }
                 }
+            }
+        }
 
-                if ($stationData[$station]['last_capture'] === null || $capturedAt > $stationData[$station]['last_capture']) {
-                    $stationData[$station]['last_capture'] = $capturedAt;
-                }
+        // Extract geolocation, operator, and camera params from latest capture's metadata for each station
+        $geolocations = [];
+        $operatorsFromMetadata = [];
+        $cameraParams = [];
+        foreach ($latestCapture as $stationName => $capture) {
+            $facts = $this->readMetadataFacts($capture['metadata_path']);
+            if ($facts['geolocation'] !== null) {
+                $geolocations[$stationName] = $facts['geolocation'];
+            }
+            if ($facts['operator'] !== null) {
+                $operatorsFromMetadata[$stationName] = $facts['operator'];
+            }
+            if ($facts['camera'] !== null) {
+                $cameraParams[$stationName] = $facts['camera'];
             }
         }
 
@@ -347,7 +389,14 @@ class DataProcessor
 
         // Build station objects
         foreach ($stationData as $stationName => $data) {
-            $stations[] = $this->buildStationFromData($stationName, $metadata[$stationName] ?? null, $data);
+            $stations[] = $this->buildStationFromData(
+                $stationName, 
+                $metadata[$stationName] ?? null, 
+                $data, 
+                $geolocations[$stationName] ?? null,
+                $operatorsFromMetadata[$stationName] ?? null,
+                $cameraParams[$stationName] ?? null
+            );
         }
 
         // Add stations that have metadata but no captures yet
@@ -356,11 +405,18 @@ class DataProcessor
                 continue;
             }
 
-            $stations[] = $this->buildStationFromData($stationName, $meta, null);
+            $stations[] = $this->buildStationFromData(
+                $stationName, 
+                $meta, 
+                null, 
+                $geolocations[$stationName] ?? null,
+                $operatorsFromMetadata[$stationName] ?? null,
+                $cameraParams[$stationName] ?? null
+            );
         }
 
-        // Attach operators
-        $this->attachOperators($stations, $metadata);
+        // Attach operators (passing operators from metadata as fallback)
+        $this->attachOperators($stations, $metadata, $operatorsFromMetadata);
 
         // Sort by name
         usort($stations, fn($a, $b) => strcmp($a['name'], $b['name']));
@@ -373,23 +429,27 @@ class DataProcessor
      *
      * @param  array<string,mixed>|null  $stationData
      * @param  array<string,mixed>|null  $aggregate
+     * @param  array<string,mixed>|null  $geolocation
+     * @param  array<string,mixed>|null  $operatorFromMetadata
+     * @param  array<string,mixed>|null  $cameraParams
      * @return array<string,mixed>
      */
-    protected function buildStationFromData(string $stationName, ?array $stationData, ?array $aggregate): array
+    protected function buildStationFromData(string $stationName, ?array $stationData, ?array $aggregate, ?array $geolocation = null, ?array $operatorFromMetadata = null, ?array $cameraParams = null): array
     {
         return [
             'id' => $stationData['id'] ?? substr(md5($stationName), 0, 32),
             'name' => $stationName,
             'operador' => null,
+            'operator_from_metadata' => $operatorFromMetadata,
             'city' => $stationData['city'] ?? 'Unknown',
             'state' => $stationData['state'] ?? 'Unknown',
             'country' => $stationData['country'] ?? 'BR',
-            'latitude' => (float) ($stationData['latitude'] ?? 0),
-            'longitude' => (float) ($stationData['longitude'] ?? 0),
-            'altitude' => isset($stationData['altitude']) && is_numeric($stationData['altitude']) ? (float) $stationData['altitude'] : null,
-            'azimuth' => (float) ($stationData['azimuth'] ?? 0),
-            'elevation' => (float) ($stationData['elevation'] ?? 0),
-            'fov' => (float) ($stationData['fov'] ?? 0),
+            'latitude' => $this->measuredFloat($geolocation, 'latitude') ?? (float) ($stationData['latitude'] ?? 0),
+            'longitude' => $this->measuredFloat($geolocation, 'longitude') ?? (float) ($stationData['longitude'] ?? 0),
+            'altitude' => $this->measuredFloat($geolocation, 'altitude') ?? $this->curatedAltitude($stationData),
+            'azimuth' => $cameraParams['azimuth'] ?? (float) ($stationData['azimuth'] ?? 0),
+            'elevation' => $cameraParams['elevation'] ?? (float) ($stationData['elevation'] ?? 0),
+            'fov' => $cameraParams['fov'] ?? (float) ($stationData['fov'] ?? 0),
             'camera_model' => $stationData['camera_model'] ?? 'Unknown',
             'camera_lens' => $stationData['camera_lens'] ?? 'Unknown',
             'camera_capture' => $stationData['camera_capture'] ?? 'Unknown',
@@ -455,6 +515,7 @@ class DataProcessor
      * 1. the operator's explicit 'estacoes' list contains the station name
      * 2. the station name starts with the operator's 'estacao' prefix
      * 3. the station file's own 'operador' field matches an operator id
+     * 4. operator info from the latest capture metadata (observer/lid)
      *
      * When operators.json is missing or empty, one operator is synthesised per
      * station — the same records processOperators() falls back to — so a station
@@ -466,8 +527,9 @@ class DataProcessor
      *
      * @param  array<int,array<string,mixed>>  $stations
      * @param  array<string,array<string,mixed>>  $metadata  stations.json indexed by name
+     * @param  array<string,array{id:string,name:string,email:string}>  $operatorsFromMetadata  operator info from latest capture metadata, keyed by station name
      */
-    public function attachOperators(array &$stations, array $metadata = []): void
+    public function attachOperators(array &$stations, array $metadata = [], array $operatorsFromMetadata = []): void
     {
         if ($stations === []) {
             return;
@@ -516,9 +578,37 @@ class DataProcessor
             // Last resort: the station file may already declare the operator id.
             $declaredId = $metadata[$stationName]['operador'] ?? null;
 
-            $station['operador'] = is_string($declaredId) && $declaredId !== ''
-                ? ($operatorsById[$declaredId] ?? null)
-                : null;
+            if (is_string($declaredId) && $declaredId !== '') {
+                $station['operador'] = $operatorsById[$declaredId] ?? null;
+                continue;
+            }
+
+            // Fallback: use operator info from latest capture metadata
+            if (isset($operatorsFromMetadata[$stationName])) {
+                $metaOp = $operatorsFromMetadata[$stationName];
+                // Try to match by id first
+                if (isset($operatorsById[$metaOp['id']])) {
+                    $station['operador'] = $operatorsById[$metaOp['id']];
+                } else {
+                    // Create a minimal operator object from metadata
+                    $station['operador'] = [
+                        'id' => $metaOp['id'],
+                        'name' => $metaOp['name'],
+                        'email' => $metaOp['email'],
+                        'role' => 'operator',
+                        'visible' => true,
+                        'active' => true,
+                        'station_count' => 1,
+                        'stations' => [$stationName],
+                        'latitude' => null,
+                        'longitude' => null,
+                        'altitude' => null,
+                    ];
+                }
+                continue;
+            }
+
+            $station['operador'] = null;
         }
         unset($station);
     }
@@ -593,6 +683,104 @@ class DataProcessor
         $altitude = $stationData['altitude'] ?? $stationData['_metadata']['altitude'] ?? null;
 
         return is_numeric($altitude) ? (float) $altitude : null;
+    }
+
+    /**
+     * Read geolocation, operator, and camera params from a metadata XML file.
+     *
+     * Extracts data from the <ufocapture_record> tag in the metadata file.
+     * Returns an array with geolocation, operator, and camera keys.
+     *
+     * @return array{geolocation:?array{latitude:float,longitude:float,altitude:?float}, operator:?array{id:string,name:string,email:string}, camera:?array{azimuth:float,elevation:float,fov:float}}
+     */
+    protected function readMetadataFacts(string $path): array
+    {
+        $none = [
+            'geolocation' => null,
+            'operator' => null,
+            'camera' => null,
+        ];
+
+        $handle = @fopen($path, 'rb');
+
+        if ($handle === false) {
+            return $none;
+        }
+
+        // Read only the first 8KB - the record tag is always at the top
+        $head = fread($handle, 8192);
+        fclose($handle);
+
+        if (!is_string($head) || $head === '') {
+            return $none;
+        }
+
+        if (preg_match('/<ufocapture_record\b[^>]*>/', $head, $tagMatch) !== 1) {
+            return $none;
+        }
+
+        $tag = $tagMatch[0];
+
+        // Extract geolocation
+        $hasLat = preg_match('/\blat="([^"]*)"/', $tag, $latMatch) === 1;
+        $hasLng = preg_match('/\blng="([^"]*)"/', $tag, $lngMatch) === 1;
+
+        $geolocation = null;
+        if ($hasLat && $hasLng && is_numeric(trim($latMatch[1])) && is_numeric(trim($lngMatch[1]))) {
+            $latitude = (float) trim($latMatch[1]);
+            $longitude = (float) trim($lngMatch[1]);
+
+            // Discard unusable fixes (0,0 or out of bounds)
+            if (!($latitude == 0.0 && $longitude == 0.0)
+                && $latitude >= -90.0 && $latitude <= 90.0
+                && $longitude >= -180.0 && $longitude <= 180.0) {
+                
+                $altitude = null;
+                if (preg_match('/\balt="([^"]*)"/', $tag, $altMatch) === 1 && is_numeric(trim($altMatch[1]))) {
+                    $altitude = (float) trim($altMatch[1]);
+                }
+
+                $geolocation = [
+                    'latitude' => $latitude,
+                    'longitude' => $longitude,
+                    'altitude' => $altitude,
+                ];
+            }
+        }
+
+        // Extract operator (observer/lid)
+        $observer = preg_match('/\bobserver="([^"]*)"/', $tag, $match) === 1 ? trim($match[1]) : '';
+        $lid = preg_match('/\blid="([^"]*)"/', $tag, $match) === 1 ? trim($match[1]) : '';
+
+        $operator = null;
+        $name = $observer !== '' ? $observer : $lid;
+        if ($name !== '') {
+            $operator = [
+                'id' => $lid !== '' ? $lid : $name,
+                'name' => $name,
+                'email' => \App\Services\OperatorReader::emailFromName($name),
+            ];
+        }
+
+        // Extract camera params (azimuth, elevation, fov)
+        $camera = null;
+        $hasAz = preg_match('/\baz="([^"]*)"/', $tag, $azMatch) === 1;
+        $hasEl = preg_match('/\bel="([^"]*)"/', $tag, $elMatch) === 1;
+        $hasFov = preg_match('/\bfov="([^"]*)"/', $tag, $fovMatch) === 1;
+
+        if ($hasAz || $hasEl || $hasFov) {
+            $camera = [
+                'azimuth' => $hasAz && is_numeric(trim($azMatch[1])) ? (float) trim($azMatch[1]) : 0.0,
+                'elevation' => $hasEl && is_numeric(trim($elMatch[1])) ? (float) trim($elMatch[1]) : 0.0,
+                'fov' => $hasFov && is_numeric(trim($fovMatch[1])) ? (float) trim($fovMatch[1]) : 0.0,
+            ];
+        }
+
+        return [
+            'geolocation' => $geolocation,
+            'operator' => $operator,
+            'camera' => $camera,
+        ];
     }
 
     /**

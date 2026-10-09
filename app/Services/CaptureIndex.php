@@ -1035,7 +1035,21 @@ class CaptureIndex
             'station_aggregates' => $aggregates,
         ];
 
-        $this->retryFilePutContents($this->pathIn($stagingDir, 'manifest.json'), json_encode($manifest, JSON_UNESCAPED_UNICODE));
+        $manifestJson = json_encode($manifest, JSON_UNESCAPED_UNICODE);
+        $manifestPath = $this->pathIn($stagingDir, 'manifest.json');
+        
+        if (file_put_contents($manifestPath, $manifestJson, LOCK_EX) === false) {
+            throw new RuntimeException("Failed to write manifest to {$manifestPath}");
+        }
+
+        $handle = @fopen($manifestPath, 'r+');
+        if ($handle) {
+            fflush($handle);
+            if (function_exists('fsync')) {
+                @fsync($handle);
+            }
+            fclose($handle);
+        }
 
         if ($progress !== null) {
             $progress($filesSeen, 'done');

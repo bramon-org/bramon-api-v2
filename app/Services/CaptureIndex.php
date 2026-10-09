@@ -1084,11 +1084,15 @@ class CaptureIndex
             $to = $this->path($file);
 
             if (!is_file($from)) {
+                \Log::warning("Index publish failed: Source file missing at {$from}");
                 continue;
             }
 
-            if (!@rename($from, $to)) {
-                throw new RuntimeException("Unable to publish index file: {$to}");
+            if (!rename($from, $to)) {
+                $error = error_get_last();
+                $message = $error['message'] ?? 'Unknown error';
+                \Log::error("Index publish failed: Unable to rename {$from} to {$to}. Error: {$message}");
+                throw new RuntimeException("Unable to publish index file: {$to}. Error: {$message}");
             }
         }
 

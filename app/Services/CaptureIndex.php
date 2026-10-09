@@ -893,7 +893,7 @@ class CaptureIndex
         foreach ($sorter->sorted() as [$sortKey, $capture]) {
             $captureKey = $capture['station'] . '_' . $capture['capture_date'] . '_' . $capture['capture_time'];
 
-            $line = json_encode($capture, JSON_UNESCAPED_UNICODE);
+            $line = json_encode($capture, JSON_UNESCAPED_UNICODE | JSON_INVALID_UTF8_SUBSTITUTE);
 
             if ($line === false) {
                 continue;
@@ -1016,10 +1016,13 @@ class CaptureIndex
 
         unset($byStationRecords);
 
-        @file_put_contents(
-            $this->pathIn($stagingDir, 'station-blocks.json'),
-            json_encode($blocks, JSON_UNESCAPED_UNICODE)
-        );
+        $blocksJson = $this->encodeJson($blocks);
+        $blocksPath = $this->pathIn($stagingDir, 'station-blocks.json');
+        $blocksWritten = file_put_contents($blocksPath, $blocksJson, LOCK_EX);
+
+        if ($blocksWritten === false || $blocksWritten !== strlen($blocksJson)) {
+            throw new RuntimeException("Failed to write station blocks to {$blocksPath}");
+        }
 
         ksort($byMonth);
 
@@ -1039,13 +1042,23 @@ class CaptureIndex
         // place. rename() is atomic within a directory, so the final manifest
         // is never observed empty or half-written even if the process is
         // interrupted or the disk runs out of space mid-write.
-        $manifestJson = json_encode($manifest, JSON_UNESCAPED_UNICODE);
+        // json_encode() returns false on invalid UTF-8 (e.g. a Latin-1 operator
+        // name read from XML metadata), and file_put_contents($path, false)
+        // writes an empty file while returning 0. Encoding through encodeJson()
+        // substitutes invalid bytes and throws instead of silently truncating,
+        // and the byte count is checked so a partial write cannot be published.
+        $manifestJson = $this->encodeJson($manifest);
         $manifestPath = $this->pathIn($stagingDir, 'manifest.json');
         $tmpManifestPath = $manifestPath . '.tmp';
 
-        if (file_put_contents($tmpManifestPath, $manifestJson, LOCK_EX) === false) {
+        $written = file_put_contents($tmpManifestPath, $manifestJson, LOCK_EX);
+
+        if ($written === false || $written !== strlen($manifestJson)) {
+            $bytes = $written === false ? 'false' : (string) $written;
             @unlink($tmpManifestPath);
-            throw new RuntimeException("Failed to write temporary manifest to {$tmpManifestPath}");
+            throw new RuntimeException(
+                "Failed to write temporary manifest to {$tmpManifestPath}: wrote {$bytes} of " . strlen($manifestJson) . ' bytes'
+            );
         }
 
         $handle = @fopen($tmpManifestPath, 'r+');
@@ -1132,6 +1145,44 @@ class CaptureIndex
         if (is_resource($handle) && function_exists('fsync')) {
             @fsync($handle);
         }
+    }
+
+    /**
+     * Encode a value as JSON, substituting invalid UTF-8 instead of failing.
+     *
+     * Metadata read from XML (notably operator names) is not guaranteed to be
+     * UTF-8; JSON_INVALID_UTF8_SUBSTITUTE replaces such bytes with U+FFFD so a
+     * single bad byte cannot make json_encode() return false and leave the
+     * manifest empty. Any remaining encoding failure is surfaced loudly.
+     *
+     * @param  mixed  $value
+     */
+    protected function encodeJson(mixed $value): string
+    {
+        $json = json_encode($value, JSON_UNESCAPED_UNICODE | JSON_INVALID_UTF8_SUBSTITUTE);
+
+        if ($json === false) {
+            throw new RuntimeException('Failed to encode index data as JSON: ' . json_last_error_msg());
+        }
+
+        return $json;
+    }
+
+    /**
+     * Coerce a string read from metadata into valid UTF-8.
+     *
+     * XML metadata is not guaranteed to be UTF-8. Values that already are UTF-8
+     * are returned unchanged; anything else is treated as Windows-1252 (a
+     * superset of ISO-8859-1) and converted, so accented operator names survive
+     * instead of becoming a replacement character.
+     */
+    protected function toUtf8(string $value): string
+    {
+        if ($value === '' || mb_check_encoding($value, 'UTF-8')) {
+            return $value;
+        }
+
+        return mb_convert_encoding($value, 'UTF-8', 'Windows-1252');
     }
 
     /**
@@ -1270,6 +1321,12 @@ class CaptureIndex
     {
         $observer = preg_match('/\bobserver="([^"]*)"/', $tag, $match) === 1 ? trim($match[1]) : '';
         $lid = preg_match('/\blid="([^"]*)"/', $tag, $match) === 1 ? trim($match[1]) : '';
+
+        // Metadata is not guaranteed to be UTF-8; a Latin-1 observer name must
+        // be converted (not discarded) so operator names stay readable and the
+        // manifest keeps encoding cleanly.
+        $observer = $this->toUtf8($observer);
+        $lid = $this->toUtf8($lid);
 
         $name = $observer !== '' ? $observer : $lid;
 

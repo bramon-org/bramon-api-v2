@@ -281,6 +281,42 @@ class CaptureIndexTest extends TestCase
         $this->assertNull($index->stationOperator('NOPE'));
     }
 
+    public function testManifestIsUsableWhenMetadataContainsInvalidUtf8(): void
+    {
+        // A Latin-1 observer name ("José") is not valid UTF-8. json_encode()
+        // returns false for it, and file_put_contents($path, false) writes an
+        // empty file while reporting success, which is exactly how the live
+        // manifest ended up at 0 bytes.
+        $baseDir = $this->baseDir . '_latin1';
+        $indexDir = $this->indexDir . '_latin1';
+        $dir = $baseDir . '/TLP5/20250802';
+        @mkdir($dir, 0775, true);
+
+        $stem = 'M20250802_034905_TLP5_1';
+        file_put_contents("{$dir}/{$stem}.xml", "<ufocapture_record observer=\"Jos\xe9\"/>");
+        file_put_contents("{$dir}/{$stem}P.jpg", 'preview');
+
+        $index = new CaptureIndex($indexDir);
+        $index->rebuild(new FileSystemReader($baseDir, 0), null, 100);
+
+        $this->assertTrue($index->exists());
+        $this->assertGreaterThan(0, (int) @filesize($index->manifestPath()));
+
+        // The manifest must decode to a complete document, not merely be non-empty.
+        $decoded = json_decode((string) file_get_contents($index->manifestPath()), true);
+        $this->assertIsArray($decoded);
+        $this->assertSame(CaptureIndex::VERSION, $decoded['version']);
+        $this->assertSame(1, $decoded['total_captures']);
+
+        // The Latin-1 byte is converted, so the operator name stays readable
+        // and the station is not dropped.
+        $this->assertSame('José', $index->stationOperator('TLP5')['name']);
+
+        $index->flush();
+        $this->deleteTree($baseDir);
+        $this->deleteTree($indexDir);
+    }
+
     public function testStationWithoutObserverRecordsNoOperator(): void
     {
         // A station whose only capture metadata names nobody: the aggregate still

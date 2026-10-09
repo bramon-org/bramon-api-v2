@@ -1035,14 +1035,20 @@ class CaptureIndex
             'station_aggregates' => $aggregates,
         ];
 
+        // Write to a temporary file, flush it to disk, then rename it into
+        // place. rename() is atomic within a directory, so the final manifest
+        // is never observed empty or half-written even if the process is
+        // interrupted or the disk runs out of space mid-write.
         $manifestJson = json_encode($manifest, JSON_UNESCAPED_UNICODE);
         $manifestPath = $this->pathIn($stagingDir, 'manifest.json');
-        
-        if (file_put_contents($manifestPath, $manifestJson, LOCK_EX) === false) {
-            throw new RuntimeException("Failed to write manifest to {$manifestPath}");
+        $tmpManifestPath = $manifestPath . '.tmp';
+
+        if (file_put_contents($tmpManifestPath, $manifestJson, LOCK_EX) === false) {
+            @unlink($tmpManifestPath);
+            throw new RuntimeException("Failed to write temporary manifest to {$tmpManifestPath}");
         }
 
-        $handle = @fopen($manifestPath, 'r+');
+        $handle = @fopen($tmpManifestPath, 'r+');
         if ($handle) {
             fflush($handle);
             if (function_exists('fsync')) {
@@ -1051,36 +1057,19 @@ class CaptureIndex
             fclose($handle);
         }
 
+        if (!rename($tmpManifestPath, $manifestPath)) {
+            $error = error_get_last();
+            $message = $error['message'] ?? 'Unknown error';
+            @unlink($tmpManifestPath);
+            throw new RuntimeException("Failed to move temporary manifest to {$manifestPath}. Error: {$message}");
+        }
+
         if ($progress !== null) {
             $progress($filesSeen, 'done');
         }
 
         return $manifest;
 
-    }
-
-    /**
-     * Attempt to write a file multiple times to reduce IO write failures.
-     *
-     * @param string $filename
-     * @param string $data
-     * @param int $attempts
-     * @param int $delayMs
-     * @return bool
-     */
-    protected function retryFilePutContents(string $filename, string $data, int $attempts = 3, int $delayMs = 100): bool
-    {
-        for ($i = 0; $i < $attempts; $i++) {
-            $result = @file_put_contents($filename, $data);
-
-            if ($result !== false) {
-                return true;
-            }
-
-            usleep($delayMs * 1000);
-        }
-
-        return false;
     }
 
     /**
@@ -1126,6 +1115,8 @@ class CaptureIndex
         foreach (self::FILES as $file) {
             @unlink($this->pathIn($stagingDir, $file));
         }
+
+        @unlink($this->pathIn($stagingDir, 'manifest.json.tmp'));
 
         @rmdir($stagingDir);
     }

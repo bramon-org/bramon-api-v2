@@ -56,7 +56,7 @@ class StatsController extends Controller
 
         $stats = [
             'total_captures' => $this->index->totalCaptures(),
-            'total_stations' => count($stations),
+            'total_stations' => $this->index->totalStations(),
             'total_operators' => count($operators),
             'total_files' => $this->index->totalFiles(),
             'date_range' => [

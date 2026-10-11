@@ -126,14 +126,32 @@
                     "Captures"
                 ],
                 "summary": "Busca capturas",
-                "description": "Busca livre por estação, identificador ou caminho nos arquivos. Os resultados são ordenados do mais recente para o mais antigo. Diferente das demais listagens, esta rota não é paginada: devolve apenas o recorte superior definido por limit.",
+                "description": "Busca livre por estação, identificador ou caminho nos arquivos. Aceita os mesmos filtros e a mesma paginação de /captures, além do termo q e do filtro por múltiplas estações.",
                 "operationId": "searchCaptures",
                 "parameters": [
                     {
                         "$ref": "#/components/parameters/q"
                     },
                     {
-                        "$ref": "#/components/parameters/limit"
+                        "$ref": "#/components/parameters/page"
+                    },
+                    {
+                        "$ref": "#/components/parameters/per_page"
+                    },
+                    {
+                        "$ref": "#/components/parameters/station"
+                    },
+                    {
+                        "$ref": "#/components/parameters/date_from"
+                    },
+                    {
+                        "$ref": "#/components/parameters/date_to"
+                    },
+                    {
+                        "$ref": "#/components/parameters/has_metadata"
+                    },
+                    {
+                        "$ref": "#/components/parameters/has_preview"
                     },
                     {
                         "name": "stations[]",
@@ -156,11 +174,11 @@
                 ],
                 "responses": {
                     "200": {
-                        "description": "Resultados da busca",
+                        "description": "Página de resultados da busca",
                         "content": {
                             "application/json": {
                                 "schema": {
-                                    "$ref": "#/components/schemas/SearchResponse"
+                                    "$ref": "#/components/schemas/PaginatedCaptures"
                                 }
                             }
                         }
@@ -1417,31 +1435,6 @@
                     }
                 },
                 "type": "object"
-            },
-            "SearchResponse": {
-                "description": "Resultado da busca de capturas. Ao contrário das listagens, esta rota não é paginada: devolve apenas o recorte superior.",
-                "required": [
-                    "query",
-                    "total",
-                    "results"
-                ],
-                "properties": {
-                    "query": {
-                        "type": "string",
-                        "example": "STA07"
-                    },
-                    "total": {
-                        "type": "integer",
-                        "example": 266
-                    },
-                    "results": {
-                        "type": "array",
-                        "items": {
-                            "$ref": "#/components/schemas/Capture"
-                        }
-                    }
-                },
-                "type": "object"
             }
         },
         "parameters": {
@@ -1543,19 +1536,6 @@
                     "type": "boolean",
                     "example": true,
                     "default": true
-                }
-            },
-            "limit": {
-                "name": "limit",
-                "in": "query",
-                "description": "Número máximo de resultados da busca. Máximo aceito: 200.",
-                "required": false,
-                "schema": {
-                    "type": "integer",
-                    "example": 50,
-                    "default": 50,
-                    "maximum": 200,
-                    "minimum": 1
                 }
             },
             "q": {

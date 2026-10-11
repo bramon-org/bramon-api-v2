@@ -97,11 +97,17 @@ class CaptureController extends Controller
         path: '/captures/search',
         tags: ['Captures'],
         summary: 'Busca capturas',
-        description: 'Busca livre por estação, identificador ou caminho nos arquivos. Os resultados são ordenados do mais recente para o mais antigo. Diferente das demais listagens, esta rota não é paginada: devolve apenas o recorte superior definido por limit.',
+        description: 'Busca livre por estação, identificador ou caminho nos arquivos. Aceita os mesmos filtros e a mesma paginação de /captures, além do termo q e do filtro por múltiplas estações.',
         operationId: 'searchCaptures',
         parameters: [
             new OA\Parameter(ref: '#/components/parameters/q'),
-            new OA\Parameter(ref: '#/components/parameters/limit'),
+            new OA\Parameter(ref: '#/components/parameters/page'),
+            new OA\Parameter(ref: '#/components/parameters/per_page'),
+            new OA\Parameter(ref: '#/components/parameters/station'),
+            new OA\Parameter(ref: '#/components/parameters/date_from'),
+            new OA\Parameter(ref: '#/components/parameters/date_to'),
+            new OA\Parameter(ref: '#/components/parameters/has_metadata'),
+            new OA\Parameter(ref: '#/components/parameters/has_preview'),
             new OA\Parameter(
                 name: 'stations[]',
                 in: 'query',
@@ -116,8 +122,8 @@ class CaptureController extends Controller
         responses: [
             new OA\Response(
                 response: 200,
-                description: 'Resultados da busca',
-                content: new OA\JsonContent(ref: '#/components/schemas/SearchResponse'),
+                description: 'Página de resultados da busca',
+                content: new OA\JsonContent(ref: '#/components/schemas/PaginatedCaptures'),
             ),
             new OA\Response(
                 response: 422,
@@ -138,20 +144,25 @@ class CaptureController extends Controller
         }
 
         $query = $request->string('q')->toString();
-        $limit = max(1, min($request->integer('limit', 50), 200));
-        $stations = $request->input('stations', []);
+        $page = max(1, $request->integer('page', 1));
+        $perPage = $this->perPage($request->integer('per_page', 15));
+        $filters = $this->filters($request);
+        $filters['query'] = $query ?: null;
+        $filters['stations'] = $request->input('stations', []);
 
-        // Results are ordered newest first, so page 1 is the top slice.
-        $result = $this->index->capturesPage(1, $limit, [
-            'query' => $query ?: null,
-            'stations' => $stations,
-        ]);
+        $result = $this->index->capturesPage($page, $perPage, $filters);
+        $total = $result['total'];
+        $totalPages = $result['total_pages'];
 
-        return response()->json([
-            'query' => $query,
-            'total' => $result['total'],
-            'results' => CaptureResource::collection($result['items'])->resolve(),
-        ]);
+        return response()->json(new PaginatedResource(
+            CaptureResource::collection($result['items'])->resolve(),
+            $total,
+            $page,
+            $perPage,
+            $totalPages,
+            $page < $totalPages,
+            $page > 1
+        ));
     }
 
     /**

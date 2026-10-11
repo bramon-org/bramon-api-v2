@@ -458,8 +458,8 @@ class CaptureIndex
      * Only the requested page is retained, so memory stays O($perPage).
      *
      * @param  array{
-     *     station?:?string,
-    *     stations?:array<int,string>,
+    *     station?:?string,
+        *     stations?:array<int,string>,
      *     date_from?:?string,
      *     date_to?:?string,
      *     has_metadata?:?bool,

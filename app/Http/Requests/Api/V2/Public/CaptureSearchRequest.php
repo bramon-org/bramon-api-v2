@@ -2,9 +2,7 @@
 
 namespace App\Http\Requests\Api\V2\Public;
 
-use Illuminate\Foundation\Http\FormRequest;
-
-class CaptureSearchRequest extends FormRequest
+class CaptureSearchRequest extends CaptureListRequest
 {
     public function authorize(): bool
     {
@@ -13,21 +11,18 @@ class CaptureSearchRequest extends FormRequest
 
     public function rules(): array
     {
-        return [
+        return array_merge(parent::rules(), [
             'q' => 'required|string|min:1|max:200',
-            'limit' => 'integer|min:1|max:200',
             'stations' => 'sometimes|array|max:50',
             'stations.*' => 'string|max:50',
-            'use_cache' => 'boolean',
-        ];
+        ]);
     }
 
     public function messages(): array
     {
-        return [
+        return array_merge(parent::messages(), [
             'q.required' => 'Search query is required.',
             'q.min' => 'Search query must be at least 1 character.',
-            'limit.max' => 'Limit cannot exceed 200.',
-        ];
+        ]);
     }
 }

@@ -199,13 +199,42 @@ class CaptureApiTest extends TestCase
             ->assertJsonStructure(['detail', 'errors' => ['per_page']]);
     }
 
+    public function testCapturesSearchRejectsPerPageAboveCapturesLimit(): void
+    {
+        $this->getJson('/api/v2/public/captures/search?q=TLP&per_page=101')
+            ->assertStatus(422)
+            ->assertJsonStructure(['detail', 'errors' => ['per_page']]);
+    }
+
     public function testCapturesSearchEndpoint(): void
     {
         $response = $this->getJson('/api/v2/public/captures/search?q=TLP1');
 
         $response->assertStatus(200)
-            ->assertJsonStructure(['query', 'total', 'results'])
+            ->assertJsonStructure([
+                'data',
+                'total',
+                'page',
+                'per_page',
+                'total_pages',
+                'has_next',
+                'has_prev',
+            ])
             ->assertJsonPath('total', 2);
+    }
+
+    public function testCapturesSearchUsesCapturesPagination(): void
+    {
+        $response = $this->getJson('/api/v2/public/captures/search?q=TLP&page=2&per_page=1');
+
+        $response->assertStatus(200)
+            ->assertJsonPath('total', 3)
+            ->assertJsonPath('page', 2)
+            ->assertJsonPath('per_page', 1)
+            ->assertJsonPath('total_pages', 3)
+            ->assertJsonPath('has_next', true)
+            ->assertJsonPath('has_prev', true)
+            ->assertJsonCount(1, 'data');
     }
 
     public function testCapturesSearchCanFilterByMultipleStations(): void
@@ -221,7 +250,7 @@ class CaptureApiTest extends TestCase
         $response->assertStatus(200)
             ->assertJsonPath('total', 3);
 
-        $stations = array_unique(array_column($response->json('results'), 'station'));
+        $stations = array_unique(array_column($response->json('data'), 'station'));
         sort($stations);
 
         $this->assertSame(['TLP1', 'TLP2'], $stations);

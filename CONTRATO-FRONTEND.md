@@ -216,10 +216,16 @@ export interface Stats {
   last_updated: string;
 }
 
-export interface SearchResponse {
-  query: string;
-  total: number;
-  results: Capture[];
+export interface CaptureSearchQuery {
+  q: string;
+  page?: number;
+  per_page?: number;
+  station?: string;
+  date_from?: string;
+  date_to?: string;
+  has_metadata?: boolean;
+  has_preview?: boolean;
+  stations?: string[];
 }
 
 export interface ApiError {
@@ -261,7 +267,7 @@ page.items;
 
 ## 📥 Query params
 
-### Listagens paginadas (`/captures`, `/stations`, `/operators`, `/stations/{name}/captures`)
+### Listagens paginadas (`/captures`, `/captures/search`, `/stations`, `/operators`, `/stations/{name}/captures`)
 
 | Param | Tipo | Default | Regras |
 |-------|------|---------|--------|
@@ -272,7 +278,7 @@ page.items;
 
 `per_page=0` e `per_page=500` retornam **422**. Valide antes de enviar.
 
-### Filtros de captura (`/captures` e `/stations/{name}/captures`)
+### Filtros de captura (`/captures`, `/captures/search` e `/stations/{name}/captures`)
 
 | Param | Formato | Notas |
 |-------|---------|-------|
@@ -290,12 +296,11 @@ Formato de data errado (`01/08/2025`) → **422** com
 | Param | Regras |
 |-------|--------|
 | `q` | **Obrigatório.** string 1–200. Ausente → 422. |
-| `limit` | int 1–200, default `50`. |
 | `stations[]` | Opcional. Repita o parâmetro para filtrar por várias estações (código exato), por exemplo `stations[]=TLP1&stations[]=TLP2`. |
 
-⚠️ A busca **não é paginada**. Retorna `{ query, total, results }` — sem `page`, sem
-`has_next`. `total` é o total de matches, `results.length` é ≤ `limit`. **Não monte
-controles de paginação na busca.** Para ver mais resultados, aumente `limit`.
+Além de `q` e `stations[]`, a busca aceita os mesmos filtros de captura, `page` e
+`per_page` de `/captures`. A resposta usa o mesmo envelope paginado (`data`, `total`,
+`page`, `per_page`, `total_pages`, `has_next`, `has_prev`).
 
 ---
 
@@ -484,8 +489,8 @@ export const api = {
   stats:         () => request<Stats>('/stats'),
   captures:      (p: CaptureQuery) =>
     request<Paginated<Capture>>(`/captures?${toQueryString(p)}`),
-  captureSearch: (q: string, limit = 50) =>
-    request<SearchResponse>(`/captures/search?${toQueryString({ q, limit })}`),
+  captureSearch: (p: CaptureSearchQuery) =>
+    request<Paginated<Capture>>(`/captures/search?${toQueryString(p)}`),
   capture:       (id: string) => request<Capture>(`/captures/${id}`),
   stations:      (p: PageQuery) =>
     request<Paginated<Station>>(`/stations?${toQueryString(p)}`),

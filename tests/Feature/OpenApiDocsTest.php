@@ -187,7 +187,7 @@ class OpenApiDocsTest extends TestCase
         $spec = $this->spec();
 
         // per_page carries a max:100 rule, so an oversized page size is a 422.
-        foreach (['/captures', '/stations', '/operators'] as $path) {
+        foreach (['/captures', '/captures/search', '/stations', '/operators'] as $path) {
             $responses = $spec['paths'][$path]['get']['responses'];
             $this->assertArrayHasKey(422, $responses, "{$path} does not document 422 for invalid query params");
         }
@@ -202,15 +202,23 @@ class OpenApiDocsTest extends TestCase
         $this->assertSame(100, $perPage['schema']['maximum']);
     }
 
-    public function testCaptureSearchDocumentsMultipleStationFilter(): void
+    public function testCaptureSearchDocumentsSharedPaginationAndMultipleStationFilter(): void
     {
         $spec = $this->spec();
-        $parameters = $spec['paths']['/captures/search']['get']['parameters'];
+        $search = $spec['paths']['/captures/search']['get'];
+        $parameters = $search['parameters'];
+        $references = array_column($parameters, '$ref');
         $stations = collect($parameters)->firstWhere('name', 'stations[]');
 
+        $this->assertContains('#/components/parameters/page', $references);
+        $this->assertContains('#/components/parameters/per_page', $references);
         $this->assertNotNull($stations);
         $this->assertSame('query', $stations['in']);
         $this->assertSame('array', $stations['schema']['type']);
         $this->assertTrue($stations['explode']);
+        $this->assertSame(
+            '#/components/schemas/PaginatedCaptures',
+            $search['responses'][200]['content']['application/json']['schema']['$ref']
+        );
     }
 }

@@ -5,7 +5,7 @@ namespace App\Docs\Schemas;
 use OpenApi\Attributes as OA;
 
 /**
- * Schemas for the statistics and search endpoints.
+ * Schemas for the statistics endpoint.
  */
 #[OA\Schema(
     schema: 'DateRange',
@@ -57,20 +57,6 @@ use OpenApi\Attributes as OA;
             format: 'date-time',
             description: 'Data de geração do índice.',
             example: '2026-09-30T03:30:47+00:00',
-        ),
-    ],
-)]
-#[OA\Schema(
-    schema: 'SearchResponse',
-    description: 'Resultado da busca de capturas. Ao contrário das listagens, esta rota não é paginada: devolve apenas o recorte superior.',
-    required: ['query', 'total', 'results'],
-    properties: [
-        new OA\Property(property: 'query', type: 'string', example: 'STA07'),
-        new OA\Property(property: 'total', type: 'integer', example: 266),
-        new OA\Property(
-            property: 'results',
-            type: 'array',
-            items: new OA\Items(ref: '#/components/schemas/Capture'),
         ),
     ],
 )]

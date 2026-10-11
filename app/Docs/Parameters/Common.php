@@ -86,14 +86,6 @@ use OpenApi\Attributes as OA;
     schema: new OA\Schema(type: 'boolean', default: true, example: true),
 )]
 #[OA\Parameter(
-    parameter: 'limit',
-    name: 'limit',
-    in: 'query',
-    description: 'Número máximo de resultados da busca. Máximo aceito: 200.',
-    required: false,
-    schema: new OA\Schema(type: 'integer', minimum: 1, maximum: 200, default: 50, example: 50),
-)]
-#[OA\Parameter(
     parameter: 'q',
     name: 'q',
     in: 'query',

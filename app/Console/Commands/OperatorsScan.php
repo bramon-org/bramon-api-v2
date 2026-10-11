@@ -63,7 +63,7 @@ class OperatorsScan extends Command
         $stations = $this->dataProcessor->stationsFromIndex($index);
 
         // Build operators from the station data
-        $operators = $this->buildOperatorsFromStations($stations);
+        $operators = $this->buildOperatorsFromStations($stations, $index);
 
         $json = $pretty
             ? json_encode($operators, JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE)
@@ -113,10 +113,10 @@ class OperatorsScan extends Command
     /**
      * Build operators from station data (same as bramon:index does).
      *
-     * @param  array<int,array<string,mixed>>  $stations
+    * @param  array<int,array<string,mixed>>  $stations
      * @return array<int,array<string,mixed>>
      */
-    protected function buildOperatorsFromStations(array $stations): array
+    protected function buildOperatorsFromStations(array $stations, CaptureIndex $index): array
     {
         $operatorsMap = [];
 
@@ -141,6 +141,48 @@ class OperatorsScan extends Command
             }
 
             $stationName = $station['name'];
+            if (!in_array($stationName, $operatorsMap[$id]['estacoes'], true)) {
+                $operatorsMap[$id]['estacoes'][] = $stationName;
+            }
+        }
+
+        foreach ($index->stationAggregates() as $stationName => $aggregate) {
+            $operator = $aggregate['operator'] ?? null;
+
+            if (!is_array($operator)) {
+                continue;
+            }
+
+            $id = $operator['id'] ?? '';
+            $name = $operator['name'] ?? '';
+
+            if (!is_string($id) || $id === '' || !is_string($name) || $name === '') {
+                continue;
+            }
+
+            $syntheticId = substr(md5("op_{$stationName}"), 0, 32);
+            if (isset($operatorsMap[$syntheticId])) {
+                $operatorsMap[$syntheticId]['estacoes'] = array_values(array_diff(
+                    $operatorsMap[$syntheticId]['estacoes'],
+                    [$stationName]
+                ));
+
+                if ($operatorsMap[$syntheticId]['estacoes'] === []) {
+                    unset($operatorsMap[$syntheticId]);
+                }
+            }
+
+            if (!isset($operatorsMap[$id])) {
+                $operatorsMap[$id] = [
+                    'id' => $id,
+                    'nome' => $name,
+                    'email' => $operator['email'] ?? OperatorReader::emailFromName($name),
+                    'visivel' => true,
+                    'ativo' => true,
+                    'estacoes' => [],
+                ];
+            }
+
             if (!in_array($stationName, $operatorsMap[$id]['estacoes'], true)) {
                 $operatorsMap[$id]['estacoes'][] = $stationName;
             }

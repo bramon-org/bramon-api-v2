@@ -148,7 +148,7 @@ class CaptureApiTest extends TestCase
 
         $response->assertStatus(200)
             ->assertJsonStructure([
-                'data',
+                'data' => [['observer']],
                 'total',
                 'page',
                 'per_page',
@@ -156,7 +156,8 @@ class CaptureApiTest extends TestCase
                 'has_next',
                 'has_prev',
             ])
-            ->assertJsonPath('total', 3);
+            ->assertJsonPath('total', 3)
+            ->assertJsonPath('data.0.observer', 'Ana Silva');
     }
 
     public function testCapturesListIsNewestFirst(): void

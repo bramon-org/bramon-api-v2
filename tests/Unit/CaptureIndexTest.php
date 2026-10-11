@@ -84,6 +84,14 @@ class CaptureIndexTest extends TestCase
         $this->assertSame([], $index->stationAggregates());
     }
 
+    public function testIndexReportsIncompatibleManifestAsMissing(): void
+    {
+        $index = $this->buildIndex();
+        file_put_contents($index->manifestPath(), json_encode(['version' => CaptureIndex::VERSION - 1]));
+
+        $this->assertFalse((new CaptureIndex($this->indexDir))->exists());
+    }
+
     public function testRebuildAggregatesTotals(): void
     {
         $index = $this->buildIndex();
@@ -174,6 +182,28 @@ class CaptureIndexTest extends TestCase
         $types = array_column($capture['files'], 'type');
         sort($types);
         $this->assertSame(['metadata', 'preview', 'thumbnail'], $types);
+    }
+
+    public function testCaptureReadsObserverFromXmlWithMatchingSequenceAndDifferentTime(): void
+    {
+        $baseDir = $this->baseDir . '_observer';
+        $indexDir = $this->indexDir . '_observer';
+        $this->extraTrees[] = $baseDir;
+        $this->extraTrees[] = $indexDir;
+        $dir = $baseDir . '/ELS/20261010';
+        @mkdir($dir, 0775, true);
+
+        file_put_contents($dir . '/M20261010_062041_ELS_1T.jpg', 'thumbnail');
+        file_put_contents($dir . '/M20261010_075947_ELS_1.xml', '<ufocapture_record observer="Observer Test"/>');
+
+        $index = new CaptureIndex($indexDir);
+        $index->rebuild(new FileSystemReader($baseDir, 0), null, 100);
+
+        $captureId = substr(md5('ELS_20261010_062041'), 0, 32);
+        $capture = $index->captureById($captureId);
+
+        $this->assertNotNull($capture);
+        $this->assertSame('Observer Test', $capture['observer']);
     }
 
     public function testStationFilterReturnsOnlyThatStation(): void

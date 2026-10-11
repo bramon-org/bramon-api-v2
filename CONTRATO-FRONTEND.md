@@ -96,6 +96,8 @@ export interface Capture {
   capture_date: string;
   /** "HHMMSS", ex: "034905" */
   capture_time: string;
+  /** Observador lido do XML associado à sequência da captura. */
+  observer: string | null;
   files: CaptureFile[];
   file_count: number;
   has_metadata: boolean;

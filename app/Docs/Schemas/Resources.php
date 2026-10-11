@@ -36,7 +36,7 @@ use OpenApi\Attributes as OA;
 )]
 #[OA\Schema(
     schema: 'Capture',
-    required: ['id', 'station', 'captured_at', 'capture_date', 'capture_time', 'files', 'file_count'],
+    required: ['id', 'station', 'captured_at', 'capture_date', 'capture_time', 'observer', 'files', 'file_count'],
     properties: [
         new OA\Property(
             property: 'id',
@@ -48,6 +48,7 @@ use OpenApi\Attributes as OA;
         new OA\Property(property: 'captured_at', type: 'string', example: '2026-09-30 23:51:20'),
         new OA\Property(property: 'capture_date', type: 'string', example: '20260930'),
         new OA\Property(property: 'capture_time', type: 'string', example: '235120'),
+        new OA\Property(property: 'observer', type: 'string', nullable: true, example: 'Observer Name'),
         new OA\Property(
             property: 'files',
             type: 'array',

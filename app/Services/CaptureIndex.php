@@ -27,7 +27,7 @@ use RuntimeException;
 class CaptureIndex
 {
     /** Bumped whenever the on-disk layout changes. */
-    public const VERSION = 4;
+    public const VERSION = 5;
 
     /**
      * The artefacts a complete index consists of.
@@ -135,7 +135,8 @@ class CaptureIndex
     {
         return is_file($this->manifestPath())
             && is_file($this->capturesPath())
-            && is_file($this->linesPath());
+            && is_file($this->linesPath())
+            && $this->manifest() !== null;
     }
 
     /**
@@ -795,6 +796,8 @@ class CaptureIndex
         try {
             $manifest = $this->build($reader, $progress, $chunkSize, $stagingDir, $tempDir);
             $this->publish($stagingDir);
+            $this->manifest = null;
+            $this->stationAggregates = null;
         } finally {
             // Whether the build or the publish failed, the previous index has to
             // keep serving traffic: only the staging directory is abandoned.
@@ -824,6 +827,8 @@ class CaptureIndex
         // only opened once no matter how many files share it.
         /** @var array<string,array{operator:?array<string,string>,geolocation:?array<string,?float>}> $metadataFacts */
         $metadataFacts = [];
+        /** @var array<string,array<int,array{time:string,observer:string}>> $metadataBySequence */
+        $metadataBySequence = [];
 
         foreach ($reader->getFilesGenerator(false) as $file) {
             $filesSeen++;
@@ -847,6 +852,20 @@ class CaptureIndex
                     if ($metadataFacts[$key]['geolocation'] === null && $facts['geolocation'] !== null) {
                         $metadataFacts[$key]['geolocation'] = $facts['geolocation'];
                     }
+                }
+
+                $observer = $facts['operator']['name'] ?? null;
+                $sequence = (string) ($file['sequence'] ?? '');
+                if (is_string($observer) && $observer !== '' && $sequence !== '') {
+                    $associationKey = $this->metadataSequenceKey(
+                        (string) $file['station'],
+                        (string) $file['date'],
+                        $sequence
+                    );
+                    $metadataBySequence[$associationKey][] = [
+                        'time' => (string) $file['time'],
+                        'observer' => $observer,
+                    ];
                 }
             }
 
@@ -892,6 +911,17 @@ class CaptureIndex
 
         foreach ($sorter->sorted() as [$sortKey, $capture]) {
             $captureKey = $capture['station'] . '_' . $capture['capture_date'] . '_' . $capture['capture_time'];
+
+            $associationKey = $this->metadataSequenceKey(
+                (string) $capture['station'],
+                (string) $capture['capture_date'],
+                (string) ($capture['_metadata_sequence'] ?? '')
+            );
+            $capture['observer'] = $this->closestObserver(
+                $metadataBySequence[$associationKey] ?? [],
+                (string) $capture['capture_time']
+            );
+            unset($capture['_metadata_sequence']);
 
             $line = json_encode($capture, JSON_UNESCAPED_UNICODE | JSON_INVALID_UTF8_SUBSTITUTE);
 
@@ -1210,6 +1240,8 @@ class CaptureIndex
             'captured_at' => $capturedAt ?? "{$date} 00:00:00",
             'capture_date' => $date,
             'capture_time' => $time,
+            'observer' => null,
+            '_metadata_sequence' => (string) ($file['sequence'] ?? ''),
             'files' => [],
             'file_count' => 0,
             'has_metadata' => false,
@@ -1223,6 +1255,41 @@ class CaptureIndex
             'mag' => null,
             'analyzed' => false,
         ];
+    }
+
+    protected function metadataSequenceKey(string $station, string $date, string $sequence): string
+    {
+        return implode("\0", [$station, $date, $sequence]);
+    }
+
+    /**
+     * Resolve metadata from the same station, date and file sequence to the
+     * closest capture time, since XML timestamps can differ from image times.
+     *
+     * @param  array<int,array{time:string,observer:string}>  $candidates
+     */
+    protected function closestObserver(array $candidates, string $captureTime): ?string
+    {
+        $toSeconds = static fn (string $time): int =>
+            ((int) substr($time, 0, 2) * 3600)
+            + ((int) substr($time, 2, 2) * 60)
+            + (int) substr($time, 4, 2);
+
+        $captureSeconds = $toSeconds($captureTime);
+        $closestDistance = PHP_INT_MAX;
+        $closestObserver = null;
+
+        foreach ($candidates as $candidate) {
+            $distance = abs($toSeconds($candidate['time']) - $captureSeconds);
+
+            if ($distance < $closestDistance
+                || ($distance === $closestDistance && ($closestObserver === null || strcmp($candidate['observer'], $closestObserver) < 0))) {
+                $closestDistance = $distance;
+                $closestObserver = $candidate['observer'];
+            }
+        }
+
+        return $closestObserver;
     }
 
     /**

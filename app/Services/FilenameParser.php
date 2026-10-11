@@ -80,6 +80,7 @@ class FilenameParser
             'date' => $matches['date'],
             'time' => $matches['time'],
             'station' => $matches['station'],
+            'sequence' => preg_replace('/[TPA]$/i', '', $typeRaw),
             'type' => $fileType,
             'extension' => $ext,
         ];

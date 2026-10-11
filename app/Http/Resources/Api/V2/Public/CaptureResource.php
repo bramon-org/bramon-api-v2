@@ -15,6 +15,7 @@ class CaptureResource extends JsonResource
             'captured_at' => $this['captured_at'],
             'capture_date' => $this['capture_date'],
             'capture_time' => $this['capture_time'],
+            'observer' => $this['observer'] ?? null,
             'files' => $this['files'],
             'file_count' => $this['file_count'],
             'has_metadata' => $this['has_metadata'],

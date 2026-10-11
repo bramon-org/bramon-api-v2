@@ -205,6 +205,7 @@ class FileSystemReader
                 'station' => $stationName,
                 'date' => $parsed['date'],
                 'time' => $parsed['time'],
+                'sequence' => $parsed['sequence'],
                 'type' => $parsed['type'],
                 'extension' => $parsed['extension'],
             ];

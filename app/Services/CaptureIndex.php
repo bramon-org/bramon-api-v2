@@ -324,75 +324,89 @@ class CaptureIndex
     /**
      * Read a single capture by its 0-based line number.
      */
-    protected function readLine(int $index): ?array
+    protected function readLine(int $index, $capturesHandle = null, $linesHandle = null): ?array
     {
-        $offset = $this->offsetForLine($index);
+        $ownsCapturesHandle = $capturesHandle === null;
 
-        if ($offset === null) {
+        if ($ownsCapturesHandle) {
+            $capturesHandle = @fopen($this->capturesPath(), 'rb');
+        }
+
+        if ($capturesHandle === false) {
             return null;
         }
 
-        $handle = @fopen($this->capturesPath(), 'rb');
+        try {
+            $offset = $this->offsetForLine($index, $linesHandle);
 
-        if ($handle === false) {
-            return null;
+            if ($offset === null) {
+                return null;
+            }
+
+            if (fseek($capturesHandle, $offset) !== 0) {
+                return null;
+            }
+
+            $line = fgets($capturesHandle);
+
+            if ($line === false) {
+                return null;
+            }
+
+            $decoded = json_decode($line, true);
+
+            return is_array($decoded) ? $decoded : null;
+        } finally {
+            if ($ownsCapturesHandle && is_resource($capturesHandle)) {
+                fclose($capturesHandle);
+            }
         }
-
-        if (fseek($handle, $offset) !== 0) {
-            fclose($handle);
-
-            return null;
-        }
-
-        $line = fgets($handle);
-        fclose($handle);
-
-        if ($line === false) {
-            return null;
-        }
-
-        $decoded = json_decode($line, true);
-
-        return is_array($decoded) ? $decoded : null;
     }
 
     /**
      * Byte offset of a capture line, read from the fixed-width offset table.
      */
-    protected function offsetForLine(int $index): ?int
+    protected function offsetForLine(int $index, $linesHandle = null): ?int
     {
         if ($index < 0) {
             return null;
         }
 
-        $handle = @fopen($this->linesPath(), 'rb');
+        $ownsLinesHandle = $linesHandle === null;
 
-        if ($handle === false) {
+        if ($ownsLinesHandle) {
+            $linesHandle = @fopen($this->linesPath(), 'rb');
+        }
+
+        if ($linesHandle === false) {
             return null;
         }
 
-        $position = $index * self::OFFSET_BYTES;
+        try {
+            $position = $index * self::OFFSET_BYTES;
 
-        if (fseek($handle, $position) !== 0) {
-            fclose($handle);
+            if (fseek($linesHandle, $position) !== 0) {
+                return null;
+            }
 
-            return null;
+            $raw = fread($linesHandle, self::OFFSET_BYTES);
+
+            if ($raw === false || strlen($raw) < self::OFFSET_BYTES) {
+                return null;
+            }
+
+            $unpacked = unpack('J', $raw);
+
+            if ($unpacked === false) {
+                return null;
+            }
+
+            return (int) array_shift($unpacked);
+        } finally {
+            if ($ownsLinesHandle && is_resource($linesHandle)) {
+                fclose($linesHandle);
+            }
         }
-
-        $raw = fread($handle, self::OFFSET_BYTES);
-        fclose($handle);
-
-        if ($raw === false || strlen($raw) < self::OFFSET_BYTES) {
-            return null;
-        }
-
-        $unpacked = unpack('J', $raw);
-
-        if ($unpacked === false) {
-            return null;
-        }
-
-        return (int) array_shift($unpacked);
     }
 
     /**
@@ -514,45 +528,68 @@ class CaptureIndex
             ];
         }
 
-        // Station requests resolve to a small block of line indices; otherwise
-        // walk the offset table. Neither path materialises a large array.
-        if ($station !== null && $station !== '') {
-            foreach ($this->lineIndicesForStation($station) as $lineIndex) {
-                $capture = $this->readLine($lineIndex);
+        $capturesHandle = @fopen($this->capturesPath(), 'rb');
+        $linesHandle = @fopen($this->linesPath(), 'rb');
 
-                if ($capture === null) {
-                    continue;
-                }
-
-                if (!$this->matches($capture, $dateFrom, $dateTo, $hasMetadata, $hasPreview, $qLower, $stations)) {
-                    continue;
-                }
-
-                if ($matched >= $start && count($collected) < $perPage) {
-                    $collected[] = $capture;
-                }
-
-                $matched++;
+        if ($capturesHandle === false || $linesHandle === false) {
+            if (is_resource($capturesHandle)) {
+                fclose($capturesHandle);
             }
-        } else {
-            $total = $this->lineCount();
+            if (is_resource($linesHandle)) {
+                fclose($linesHandle);
+            }
+            $capturesHandle = null;
+            $linesHandle = null;
+        }
 
-            for ($lineIndex = 0; $lineIndex < $total; $lineIndex++) {
-                $capture = $this->readLine($lineIndex);
+        try {
+            // Station requests resolve to a block of line indices; otherwise
+            // walk the offset table. Reuse both file handles across the scan.
+            if ($station !== null && $station !== '') {
+                foreach ($this->lineIndicesForStation($station) as $lineIndex) {
+                    $capture = $this->readLine($lineIndex, $capturesHandle, $linesHandle);
 
-                if ($capture === null) {
-                    continue;
+                    if ($capture === null) {
+                        continue;
+                    }
+
+                    if (!$this->matches($capture, $dateFrom, $dateTo, $hasMetadata, $hasPreview, $qLower, $stations)) {
+                        continue;
+                    }
+
+                    if ($matched >= $start && count($collected) < $perPage) {
+                        $collected[] = $capture;
+                    }
+
+                    $matched++;
                 }
+            } else {
+                $total = $this->lineCount();
 
-                if (!$this->matches($capture, $dateFrom, $dateTo, $hasMetadata, $hasPreview, $qLower, $stations)) {
-                    continue;
+                for ($lineIndex = 0; $lineIndex < $total; $lineIndex++) {
+                    $capture = $this->readLine($lineIndex, $capturesHandle, $linesHandle);
+
+                    if ($capture === null) {
+                        continue;
+                    }
+
+                    if (!$this->matches($capture, $dateFrom, $dateTo, $hasMetadata, $hasPreview, $qLower, $stations)) {
+                        continue;
+                    }
+
+                    if ($matched >= $start && count($collected) < $perPage) {
+                        $collected[] = $capture;
+                    }
+
+                    $matched++;
                 }
-
-                if ($matched >= $start && count($collected) < $perPage) {
-                    $collected[] = $capture;
-                }
-
-                $matched++;
+            }
+        } finally {
+            if (is_resource($capturesHandle)) {
+                fclose($capturesHandle);
+            }
+            if (is_resource($linesHandle)) {
+                fclose($linesHandle);
             }
         }
 
@@ -618,22 +655,45 @@ class CaptureIndex
         $collected = [];
         $start = ($page - 1) * $perPage;
 
-        foreach ($indices as $lineIndex) {
-            $capture = $this->readLine($lineIndex);
+        $capturesHandle = @fopen($this->capturesPath(), 'rb');
+        $linesHandle = @fopen($this->linesPath(), 'rb');
 
-            if ($capture === null) {
-                continue;
+        if ($capturesHandle === false || $linesHandle === false) {
+            if (is_resource($capturesHandle)) {
+                fclose($capturesHandle);
             }
-
-            if (!$this->matches($capture, $dateFrom, $dateTo, $hasMetadata, $hasPreview, $qLower)) {
-                continue;
+            if (is_resource($linesHandle)) {
+                fclose($linesHandle);
             }
+            $capturesHandle = null;
+            $linesHandle = null;
+        }
 
-            if ($matched >= $start && count($collected) < $perPage) {
-                $collected[] = $capture;
+        try {
+            foreach ($indices as $lineIndex) {
+                $capture = $this->readLine($lineIndex, $capturesHandle, $linesHandle);
+
+                if ($capture === null) {
+                    continue;
+                }
+
+                if (!$this->matches($capture, $dateFrom, $dateTo, $hasMetadata, $hasPreview, $qLower)) {
+                    continue;
+                }
+
+                if ($matched >= $start && count($collected) < $perPage) {
+                    $collected[] = $capture;
+                }
+
+                $matched++;
             }
-
-            $matched++;
+        } finally {
+            if (is_resource($capturesHandle)) {
+                fclose($capturesHandle);
+            }
+            if (is_resource($linesHandle)) {
+                fclose($linesHandle);
+            }
         }
 
         return [

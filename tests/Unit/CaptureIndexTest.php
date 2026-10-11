@@ -249,6 +249,14 @@ class CaptureIndexTest extends TestCase
         $this->assertSame(2, $page['total']);
         $this->assertSame(2, $page['total_pages']);
 
+        $secondPage = $index->stationCapturesPage('TLP1', 2, 1);
+        $this->assertSame(2, $secondPage['total']);
+        $this->assertSame('20250802', $secondPage['items'][0]['capture_date']);
+
+        $filteredListPage = $index->capturesPage(2, 1, ['station' => 'TLP1']);
+        $this->assertSame(2, $filteredListPage['total']);
+        $this->assertSame('20250802', $filteredListPage['items'][0]['capture_date']);
+
         $stats = $index->stationStats('TLP1');
         $this->assertSame(2, $stats['total_captures']);
         $this->assertSame(['202508' => 2], $stats['captures_by_month']);

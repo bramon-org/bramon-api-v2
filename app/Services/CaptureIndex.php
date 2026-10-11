@@ -416,19 +416,14 @@ class CaptureIndex
      */
     protected function lineIndicesForStation(string $station): array
     {
-        if (!is_file($this->stationBlocksPath())) {
+        $block = $this->stationBlock($station);
+
+        if ($block === null) {
             return [];
         }
 
-        $blocksRaw = @file_get_contents($this->stationBlocksPath());
-        $blocks = $blocksRaw === false ? null : json_decode($blocksRaw, true);
-
-        if (!is_array($blocks) || !isset($blocks[$station])) {
-            return [];
-        }
-
-        $offset = (int) ($blocks[$station]['offset'] ?? 0);
-        $count = (int) ($blocks[$station]['count'] ?? 0);
+        $offset = $block['offset'];
+        $count = $block['count'];
 
         if ($count <= 0) {
             return [];
@@ -464,6 +459,79 @@ class CaptureIndex
         fclose($handle);
 
         return $indices;
+    }
+
+    /**
+     * Read only one station page of line indices while streaming past earlier entries.
+     *
+     * @return array{indices:array<int,int>,total:int}
+     */
+    protected function lineIndicesPageForStation(string $station, int $start, int $limit): array
+    {
+        $block = $this->stationBlock($station);
+
+        if ($block === null) {
+            return ['indices' => [], 'total' => 0];
+        }
+
+        $total = $block['count'];
+
+        if ($start >= $total || $limit <= 0) {
+            return ['indices' => [], 'total' => $total];
+        }
+
+        $handle = @fopen($this->byStationPath(), 'rb');
+
+        if ($handle === false) {
+            return ['indices' => [], 'total' => $total];
+        }
+
+        if (fseek($handle, $block['offset']) !== 0) {
+            fclose($handle);
+
+            return ['indices' => [], 'total' => $total];
+        }
+
+        $indices = [];
+        $read = 0;
+
+        while ($read < min($start + $limit, $total) && ($line = fgets($handle)) !== false) {
+            if ($read >= $start) {
+                $tab = strrpos($line, "\t");
+
+                if ($tab !== false) {
+                    $indices[] = (int) trim(substr($line, $tab + 1));
+                }
+            }
+
+            $read++;
+        }
+
+        fclose($handle);
+
+        return ['indices' => $indices, 'total' => $total];
+    }
+
+    /**
+     * @return array{offset:int,count:int}|null
+     */
+    protected function stationBlock(string $station): ?array
+    {
+        if (!is_file($this->stationBlocksPath())) {
+            return null;
+        }
+
+        $blocksRaw = @file_get_contents($this->stationBlocksPath());
+        $blocks = $blocksRaw === false ? null : json_decode($blocksRaw, true);
+
+        if (!is_array($blocks) || !isset($blocks[$station]) || !is_array($blocks[$station])) {
+            return null;
+        }
+
+        return [
+            'offset' => (int) ($blocks[$station]['offset'] ?? 0),
+            'count' => max(0, (int) ($blocks[$station]['count'] ?? 0)),
+        ];
     }
 
     /**
@@ -525,6 +593,25 @@ class CaptureIndex
                 'items' => $collected,
                 'total' => $total,
                 'total_pages' => (int) ceil($total / $perPage),
+            ];
+        }
+
+        if ($station !== null && $station !== '' && !$hasFilters) {
+            $stationPage = $this->lineIndicesPageForStation($station, $start, $perPage);
+            $items = [];
+
+            foreach ($stationPage['indices'] as $lineIndex) {
+                $capture = $this->readLine($lineIndex);
+
+                if ($capture !== null) {
+                    $items[] = $capture;
+                }
+            }
+
+            return [
+                'items' => $items,
+                'total' => $stationPage['total'],
+                'total_pages' => (int) ceil($stationPage['total'] / $perPage),
             ];
         }
 
@@ -648,6 +735,32 @@ class CaptureIndex
         $hasPreview = $filters['has_preview'] ?? null;
         $query = $filters['query'] ?? null;
         $qLower = $query !== null && $query !== '' ? strtolower($query) : null;
+
+        $hasFilters = ($dateFrom !== null && $dateFrom !== '')
+            || ($dateTo !== null && $dateTo !== '')
+            || $hasMetadata !== null
+            || $hasPreview !== null
+            || $qLower !== null;
+
+        if (!$hasFilters) {
+            $start = ($page - 1) * $perPage;
+            $stationPage = $this->lineIndicesPageForStation($station, $start, $perPage);
+            $items = [];
+
+            foreach ($stationPage['indices'] as $lineIndex) {
+                $capture = $this->readLine($lineIndex);
+
+                if ($capture !== null) {
+                    $items[] = $capture;
+                }
+            }
+
+            return [
+                'items' => $items,
+                'total' => $stationPage['total'],
+                'total_pages' => (int) ceil($stationPage['total'] / $perPage),
+            ];
+        }
 
         $indices = $this->lineIndicesForStation($station);
 

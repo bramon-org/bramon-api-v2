@@ -208,6 +208,25 @@ class CaptureApiTest extends TestCase
             ->assertJsonPath('total', 2);
     }
 
+    public function testCapturesSearchCanFilterByMultipleStations(): void
+    {
+        $dir = $this->baseDir . '/TLP3/20250804';
+        @mkdir($dir, 0775, true);
+        file_put_contents("{$dir}/M20250804_101500_TLP3_1.xml", '<ufocapture_record observer="Caio"/>');
+        file_put_contents("{$dir}/M20250804_101500_TLP3_1P.jpg", 'preview');
+        $this->buildIndex();
+
+        $response = $this->getJson('/api/v2/public/captures/search?q=TLP&stations[]=TLP1&stations[]=TLP2');
+
+        $response->assertStatus(200)
+            ->assertJsonPath('total', 3);
+
+        $stations = array_unique(array_column($response->json('results'), 'station'));
+        sort($stations);
+
+        $this->assertSame(['TLP1', 'TLP2'], $stations);
+    }
+
     public function testStationsListEndpoint(): void
     {
         $response = $this->getJson('/api/v2/public/stations');

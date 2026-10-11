@@ -291,6 +291,7 @@ Formato de data errado (`01/08/2025`) → **422** com
 |-------|--------|
 | `q` | **Obrigatório.** string 1–200. Ausente → 422. |
 | `limit` | int 1–200, default `50`. |
+| `stations[]` | Opcional. Repita o parâmetro para filtrar por várias estações (código exato), por exemplo `stations[]=TLP1&stations[]=TLP2`. |
 
 ⚠️ A busca **não é paginada**. Retorna `{ query, total, results }` — sem `page`, sem
 `has_next`. `total` é o total de matches, `results.length` é ≤ `limit`. **Não monte

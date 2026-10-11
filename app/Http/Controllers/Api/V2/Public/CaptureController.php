@@ -102,6 +102,15 @@ class CaptureController extends Controller
         parameters: [
             new OA\Parameter(ref: '#/components/parameters/q'),
             new OA\Parameter(ref: '#/components/parameters/limit'),
+            new OA\Parameter(
+                name: 'stations[]',
+                in: 'query',
+                description: 'Filtra por uma ou mais estações (códigos exatos).',
+                required: false,
+                style: 'form',
+                explode: true,
+                schema: new OA\Schema(type: 'array', items: new OA\Items(type: 'string', maxLength: 50)),
+            ),
             new OA\Parameter(ref: '#/components/parameters/use_cache'),
         ],
         responses: [
@@ -130,9 +139,13 @@ class CaptureController extends Controller
 
         $query = $request->string('q')->toString();
         $limit = max(1, min($request->integer('limit', 50), 200));
+        $stations = $request->input('stations', []);
 
         // Results are ordered newest first, so page 1 is the top slice.
-        $result = $this->index->capturesPage(1, $limit, ['query' => $query ?: null]);
+        $result = $this->index->capturesPage(1, $limit, [
+            'query' => $query ?: null,
+            'stations' => $stations,
+        ]);
 
         return response()->json([
             'query' => $query,

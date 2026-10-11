@@ -459,6 +459,7 @@ class CaptureIndex
      *
      * @param  array{
      *     station?:?string,
+    *     stations?:array<int,string>,
      *     date_from?:?string,
      *     date_to?:?string,
      *     has_metadata?:?bool,
@@ -473,6 +474,7 @@ class CaptureIndex
         $page = max(1, $page);
 
         $station = $filters['station'] ?? null;
+        $stations = $filters['stations'] ?? null;
         $dateFrom = $filters['date_from'] ?? null;
         $dateTo = $filters['date_to'] ?? null;
         $hasMetadata = $filters['has_metadata'] ?? null;
@@ -489,6 +491,7 @@ class CaptureIndex
             || ($dateTo !== null && $dateTo !== '')
             || $hasMetadata !== null
             || $hasPreview !== null
+            || (is_array($stations) && $stations !== [])
             || $qLower !== null;
 
         // Fast path: no station and no filters. The offset table already gives
@@ -521,7 +524,7 @@ class CaptureIndex
                     continue;
                 }
 
-                if (!$this->matches($capture, $dateFrom, $dateTo, $hasMetadata, $hasPreview, $qLower)) {
+                if (!$this->matches($capture, $dateFrom, $dateTo, $hasMetadata, $hasPreview, $qLower, $stations)) {
                     continue;
                 }
 
@@ -541,7 +544,7 @@ class CaptureIndex
                     continue;
                 }
 
-                if (!$this->matches($capture, $dateFrom, $dateTo, $hasMetadata, $hasPreview, $qLower)) {
+                if (!$this->matches($capture, $dateFrom, $dateTo, $hasMetadata, $hasPreview, $qLower, $stations)) {
                     continue;
                 }
 
@@ -700,8 +703,14 @@ class CaptureIndex
         ?string $dateTo,
         ?bool $hasMetadata,
         ?bool $hasPreview,
-        ?string $qLower
+        ?string $qLower,
+        ?array $stations = null
     ): bool {
+        if (is_array($stations) && $stations !== []
+            && !in_array($capture['station'] ?? null, $stations, true)) {
+            return false;
+        }
+
         $capturedAt = (string) ($capture['captured_at'] ?? '');
 
         if ($dateFrom !== null && $dateFrom !== '' && $capturedAt < $dateFrom) {

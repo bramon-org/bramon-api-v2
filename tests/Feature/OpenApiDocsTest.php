@@ -201,4 +201,16 @@ class OpenApiDocsTest extends TestCase
         $this->assertSame('query', $perPage['in']);
         $this->assertSame(100, $perPage['schema']['maximum']);
     }
+
+    public function testCaptureSearchDocumentsMultipleStationFilter(): void
+    {
+        $spec = $this->spec();
+        $parameters = $spec['paths']['/captures/search']['get']['parameters'];
+        $stations = collect($parameters)->firstWhere('name', 'stations[]');
+
+        $this->assertNotNull($stations);
+        $this->assertSame('query', $stations['in']);
+        $this->assertSame('array', $stations['schema']['type']);
+        $this->assertTrue($stations['explode']);
+    }
 }

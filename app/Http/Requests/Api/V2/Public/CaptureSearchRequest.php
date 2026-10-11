@@ -16,6 +16,8 @@ class CaptureSearchRequest extends FormRequest
         return [
             'q' => 'required|string|min:1|max:200',
             'limit' => 'integer|min:1|max:200',
+            'stations' => 'sometimes|array|max:50',
+            'stations.*' => 'string|max:50',
             'use_cache' => 'boolean',
         ];
     }

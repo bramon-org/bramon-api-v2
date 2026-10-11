@@ -136,6 +136,21 @@
                         "$ref": "#/components/parameters/limit"
                     },
                     {
+                        "name": "stations[]",
+                        "in": "query",
+                        "description": "Filtra por uma ou mais estações (códigos exatos).",
+                        "required": false,
+                        "style": "form",
+                        "explode": true,
+                        "schema": {
+                            "type": "array",
+                            "items": {
+                                "type": "string",
+                                "maxLength": 50
+                            }
+                        }
+                    },
+                    {
                         "$ref": "#/components/parameters/use_cache"
                     }
                 ],

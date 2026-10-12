@@ -1,5 +1,7 @@
 # BRAMON API v2.0 (Laravel)
 
+[![Tests](https://github.com/bramon-org/bramon-api-v2/actions/workflows/laravel.yml/badge.svg)](https://github.com/bramon-org/bramon-api-v2/actions/workflows/laravel.yml)
+
 API REST performática para consulta de capturas de meteoros da rede BRAMON (Brazilian Meteor Observation Network), desenvolvida em Laravel 11 + PHP 8.4.
 
 ## 📋 Visão Geral

@@ -127,22 +127,22 @@ class OperatorsScan extends Command
                 continue;
             }
 
-            $id = $operator['id'] ?? '';
+            $stationName = (string) ($station['name'] ?? '');
+            $operatorId = $this->stationOperatorId($stationName);
 
-            if (!isset($operatorsMap[$id])) {
-                $operatorsMap[$id] = [
-                    'id' => $id,
+            if (!isset($operatorsMap[$operatorId])) {
+                $operatorsMap[$operatorId] = [
+                    'id' => $operatorId,
                     'nome' => $operator['name'] ?? $operator['nome'] ?? '',
                     'email' => $operator['email'] ?? '',
-                    'visivel' => $operator['visible'] ?? true,
-                    'ativo' => $operator['active'] ?? true,
+                    'visivel' => $operator['visible'] ?? $operator['visivel'] ?? true,
+                    'ativo' => $operator['active'] ?? $operator['ativo'] ?? true,
                     'estacoes' => [],
                 ];
             }
 
-            $stationName = $station['name'];
-            if (!in_array($stationName, $operatorsMap[$id]['estacoes'], true)) {
-                $operatorsMap[$id]['estacoes'][] = $stationName;
+            if (!in_array($stationName, $operatorsMap[$operatorId]['estacoes'], true)) {
+                $operatorsMap[$operatorId]['estacoes'][] = $stationName;
             }
         }
 
@@ -153,28 +153,17 @@ class OperatorsScan extends Command
                 continue;
             }
 
-            $id = $operator['id'] ?? '';
             $name = $operator['name'] ?? '';
 
-            if (!is_string($id) || $id === '' || !is_string($name) || $name === '') {
+            if (!is_string($name) || $name === '') {
                 continue;
             }
 
-            $syntheticId = substr(md5("op_{$stationName}"), 0, 32);
-            if (isset($operatorsMap[$syntheticId])) {
-                $operatorsMap[$syntheticId]['estacoes'] = array_values(array_diff(
-                    $operatorsMap[$syntheticId]['estacoes'],
-                    [$stationName]
-                ));
+            $operatorId = $this->stationOperatorId($stationName);
 
-                if ($operatorsMap[$syntheticId]['estacoes'] === []) {
-                    unset($operatorsMap[$syntheticId]);
-                }
-            }
-
-            if (!isset($operatorsMap[$id])) {
-                $operatorsMap[$id] = [
-                    'id' => $id,
+            if (!isset($operatorsMap[$operatorId])) {
+                $operatorsMap[$operatorId] = [
+                    'id' => $operatorId,
                     'nome' => $name,
                     'email' => $operator['email'] ?? OperatorReader::emailFromName($name),
                     'visivel' => true,
@@ -183,8 +172,8 @@ class OperatorsScan extends Command
                 ];
             }
 
-            if (!in_array($stationName, $operatorsMap[$id]['estacoes'], true)) {
-                $operatorsMap[$id]['estacoes'][] = $stationName;
+            if (!in_array($stationName, $operatorsMap[$operatorId]['estacoes'], true)) {
+                $operatorsMap[$operatorId]['estacoes'][] = $stationName;
             }
         }
 
@@ -194,6 +183,14 @@ class OperatorsScan extends Command
         unset($op);
 
         return array_values($operatorsMap);
+    }
+
+    protected function stationOperatorId(string $stationName): string
+    {
+        $normalized = trim((string) $stationName);
+        $withoutSuffix = preg_replace('/\d+$/', '', $normalized);
+
+        return $withoutSuffix !== '' ? trim((string) $withoutSuffix) : $normalized;
     }
 
     protected function humanBytes(int $bytes): string

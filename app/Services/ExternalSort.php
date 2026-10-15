@@ -36,7 +36,10 @@ class ExternalSort
     {
         $this->chunkSize = max(1, $chunkSize);
         $this->descending = $descending;
-        $this->tempDir = $tempDir ?? sys_get_temp_dir();
+        // An empty string (e.g. an unset-but-present BRAMON_TEMP_DIR env var)
+        // must fall back to the system temp dir instead of producing chunks
+        // under a relative path in the working directory.
+        $this->tempDir = $tempDir !== null && $tempDir !== '' ? $tempDir : sys_get_temp_dir();
     }
 
     /**
@@ -60,6 +63,52 @@ class ExternalSort
     public function count(): int
     {
         return $this->totalAdded;
+    }
+
+    /**
+     * Adopt a chunk file spilled by a previous (interrupted) run.
+     *
+     * This is what makes an index build resumable: chunk files live in the
+     * staging directory, so a new process can pick up the sorted runs the
+     * previous one already flushed instead of re-scanning those stations.
+     * The record count is derived by counting lines, so a checkpoint only has
+     * to persist the file list.
+     */
+    public function adoptChunk(string $path): void
+    {
+        if (!is_file($path)) {
+            return;
+        }
+
+        $count = 0;
+        $handle = @fopen($path, 'rb');
+
+        if ($handle === false) {
+            return;
+        }
+
+        while (fgets($handle) !== false) {
+            $count++;
+        }
+
+        fclose($handle);
+
+        if ($count <= 0) {
+            return;
+        }
+
+        $this->chunkFiles[] = $path;
+        $this->totalAdded += $count;
+    }
+
+    /**
+     * Chunk files spilled so far, for persisting a checkpoint.
+     *
+     * @return array<int,string>
+     */
+    public function chunkFiles(): array
+    {
+        return $this->chunkFiles;
     }
 
     /**

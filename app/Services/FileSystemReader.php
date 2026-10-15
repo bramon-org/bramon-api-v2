@@ -227,6 +227,98 @@ class FileSystemReader
     }
 
     /**
+     * Names of the top-level station directories, sorted for deterministic scans.
+     *
+     * The captures tree is organised as <base>/<station>/..., so one entry here
+     * is one checkpoint unit for a resumable index build.
+     *
+     * @return array<int,string>
+     */
+    public function stationNames(): array
+    {
+        if (!is_dir($this->baseDir)) {
+            Log::warning("Base directory does not exist: {$this->baseDir}");
+            return [];
+        }
+
+        $names = [];
+
+        foreach (@scandir($this->baseDir) ?: [] as $entry) {
+            if ($entry === '.' || $entry === '..' || str_starts_with($entry, '.')) {
+                continue;
+            }
+
+            if (is_dir($this->baseDir . '/' . $entry)) {
+                $names[] = $entry;
+            }
+        }
+
+        sort($names);
+
+        return $names;
+    }
+
+    /**
+     * Get files of a single station as a generator.
+     *
+     * Scanning station by station keeps the iteration order deterministic and
+     * lets a large index build checkpoint after each station, so an
+     * interrupted build resumes where it stopped instead of from scratch.
+     *
+     * @param  string  $station  Top-level directory name.
+     * @param  string|null  $sinceDate  Skip files with a capture date (YYYYMMDD)
+     *     older than this. Checked from the filename before stat(), so skipped
+     *     files cost a regex instead of filesystem metadata reads.
+     */
+    public function getFilesGeneratorForStation(string $station, bool $useCache = false, ?string $sinceDate = null): \Generator
+    {
+        $dir = $this->baseDir . '/' . $station;
+
+        if (!is_dir($dir)) {
+            return;
+        }
+
+        $iterator = new \RecursiveIteratorIterator(
+            new \RecursiveDirectoryIterator($dir, \RecursiveDirectoryIterator::SKIP_DOTS)
+        );
+
+        foreach ($iterator as $file) {
+            if (!$file->isFile()) {
+                continue;
+            }
+
+            $filePath = $file->getPathname();
+            $relPath = $station . '/' . str_replace('\\', '/', ltrim(substr($filePath, strlen($dir) + 1), '/'));
+
+            // Skip hidden files/directories
+            if (preg_match('/(^|\/)\./', $relPath)) {
+                continue;
+            }
+
+            $filename = basename($filePath);
+
+            // Fast pre-check before expensive parsing
+            if (!FilenameParser::isValidFormat($filename)) {
+                continue;
+            }
+
+            // Date pre-filter from the filename alone: no stat() for skipped files.
+            if ($sinceDate !== null) {
+                $parsed = FilenameParser::parse($filename);
+
+                if ($parsed === null || ($parsed['date'] ?? '') < $sinceDate) {
+                    continue;
+                }
+            }
+
+            $fileInfo = $this->getFileInfo($filePath, $relPath);
+            if ($fileInfo) {
+                yield $fileInfo;
+            }
+        }
+    }
+
+    /**
      * Get the base directory path.
      */
     public function getBaseDir(): string

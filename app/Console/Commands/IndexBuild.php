@@ -22,7 +22,11 @@ class IndexBuild extends Command
                             {--chunk= : Records buffered before spilling a sorted chunk}
                             {--index-dir= : Where to write the index (default: config value)}
                             {--force : Rebuild even if the index already exists}
-                            {--flush : Delete the index and exit}';
+                            {--flush : Delete the index and exit}
+                            {--resume : Resume an interrupted build from its checkpoint instead of starting over}
+                            {--fresh : Discard any checkpoint and scan from scratch (use with --resume)}
+                            {--since-days= : Only index captures from the last X days (by filename date)}
+                            {--since= : Only index captures on/after this date (YYYY-MM-DD or YYYYMMDD)}';
 
     protected $description = 'Build the on-disk capture index used by the listing endpoints';
 
@@ -49,7 +53,7 @@ class IndexBuild extends Command
             return Command::FAILURE;
         }
 
-        if ($index->exists() && !$this->option('force')) {
+        if ($index->exists() && !$this->option('force') && !$this->option('resume')) {
             $this->warn('Index already exists. Use --force to rebuild or --flush to remove it.');
             $this->line("  Captures:  " . number_format($index->totalCaptures()));
             $this->line("  Generated: " . ($index->generatedAt() ?? 'unknown'));
@@ -58,7 +62,20 @@ class IndexBuild extends Command
         }
 
         $chunkSize = max(1, (int) ($this->option('chunk') ?: config('bramon.index_chunk_size', 20000)));
+
+        // config() returns '' when BRAMON_TEMP_DIR is present but empty (as
+        // shipped in .env.example): resolve to the system temp dir so the
+        // displayed path and the sorter agree.
         $tempDir = config('bramon.temp_dir', sys_get_temp_dir());
+
+        if (!is_string($tempDir) || $tempDir === '') {
+            $tempDir = sys_get_temp_dir();
+        }
+
+        $resume = (bool) $this->option('resume');
+        $fresh = (bool) $this->option('fresh');
+        $sinceDays = $this->option('since-days');
+        $since = $this->option('since');
 
         $reader = new FileSystemReader($baseDir, 0);
 
@@ -66,6 +83,17 @@ class IndexBuild extends Command
         $this->info("Index target:    {$index->getIndexDir()}");
         $this->info("Chunk size:      {$chunkSize}");
         $this->info("Temp directory:  {$tempDir}");
+
+        if ($resume) {
+            $this->info('Mode:            resumable (checkpoints per station)' . ($fresh ? ', fresh scan' : ''));
+        }
+
+        if ($sinceDays !== null && $sinceDays !== '') {
+            $this->info("Date filter:     last {$sinceDays} day(s) only");
+        } elseif ($since !== null && $since !== '') {
+            $this->info("Date filter:     since {$since}");
+        }
+
         $this->newLine();
 
         $start = microtime(true);
@@ -76,6 +104,12 @@ class IndexBuild extends Command
                 function (int $filesSeen, string $stage): void {
                     if ($stage === 'indexing') {
                         $this->output->write("\r  Scanning... {$filesSeen} files");
+                    } elseif ($stage === 'resumed') {
+                        $this->newLine();
+                        $this->info("  Resumed: checkpoint restored ({$filesSeen} files already indexed)");
+                    } elseif ($stage === 'checkpoint-discarded') {
+                        $this->newLine();
+                        $this->warn('  Previous checkpoint was for another source/filter; starting over.');
                     } else {
                         $this->newLine();
                     }
@@ -83,7 +117,13 @@ class IndexBuild extends Command
                     $this->info("[IndexBuild] Stage: {$stage}, Files seen: {$filesSeen}");
                 },
                 $chunkSize,
-                $tempDir
+                $tempDir,
+                [
+                    'resume' => $resume,
+                    'fresh' => $fresh,
+                    'since_days' => $sinceDays !== null && $sinceDays !== '' ? (int) $sinceDays : null,
+                    'since' => $since,
+                ]
             );
 
             if (empty($manifest)) {
@@ -103,19 +143,28 @@ class IndexBuild extends Command
 
         $this->info('Index built successfully.');
         $this->newLine();
-        $this->table(
-            ['Metric', 'Value'],
-            [
-                ['Captures', number_format($manifest['total_captures'])],
-                ['Files', number_format($manifest['total_files'])],
-                ['Stations', number_format($manifest['total_stations'])],
-                ['Earliest', $manifest['earliest'] ?? '-'],
-                ['Latest', $manifest['latest'] ?? '-'],
-                ['Disk usage', $this->humanBytes($index->diskUsage())],
-                ['Elapsed', number_format($elapsed, 2) . 's'],
-                ['Peak memory', $this->formatBytes(memory_get_peak_usage(true))],
-            ]
-        );
+
+        $rows = [
+            ['Captures', number_format($manifest['total_captures'])],
+            ['Files', number_format($manifest['total_files'])],
+            ['Stations', number_format($manifest['total_stations'])],
+            ['Earliest', $manifest['earliest'] ?? '-'],
+            ['Latest', $manifest['latest'] ?? '-'],
+        ];
+
+        if (is_array($manifest['filter'] ?? null)) {
+            $rows[] = ['Date filter', 'since ' . ($manifest['filter']['since'] ?? '?')];
+        }
+
+        if (!empty($manifest['resumed'])) {
+            $rows[] = ['Resumed', 'yes (from checkpoint)'];
+        }
+
+        $rows[] = ['Disk usage', $this->humanBytes($index->diskUsage())];
+        $rows[] = ['Elapsed', number_format($elapsed, 2) . 's'];
+        $rows[] = ['Peak memory', $this->formatBytes(memory_get_peak_usage(true))];
+
+        $this->table(['Metric', 'Value'], $rows);
 
         // Generate stations.json after building the index
         $this->call('bramon:stations-generate', [

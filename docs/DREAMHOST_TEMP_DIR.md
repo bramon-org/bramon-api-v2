@@ -71,3 +71,39 @@ Após configurar, execute o comando e verifique se:
 ## Como funciona
 
 O `ExternalSort` agora usa o diretório configurado em `BRAMON_TEMP_DIR` (ou `sys_get_temp_dir()` como fallback) para criar os arquivos temporários de sort. Isso permite que você use um diretório dentro do seu home na DreamHost, que geralmente tem menos restrições que o `/tmp` do sistema.
+
+## Bases muito grandes: build com retomada (checkpoints) e filtro por data
+
+Para árvores com milhões de arquivos, o `bramon:index` oferece duas opções que podem ser combinadas:
+
+### 1. `--resume`: retoma de onde parou
+
+```bash
+php artisan bramon:index --force --resume
+```
+
+A varredura avança estação por estação (em ordem alfabética). Após cada estação concluída, os blocos ordenados já processados ficam gravados no diretório de staging (`<index_dir>.building`) junto com um `checkpoint.json` listando as estações prontas. Se o processo cair (timeout, OOM, queda de SSH), basta rodar o mesmo comando de novo: as estações do checkpoint são puladas e só o restante é varrido.
+
+- O manifesto final registra `"resumed": true` quando blocos de um checkpoint foram aproveitados.
+- `--fresh` (combinado com `--resume`) descarta o checkpoint e recomeça do zero.
+- Um checkpoint de outra base ou de outro filtro de data é descartado automaticamente (com aviso), nunca reaproveitado em silêncio.
+- `--flush` também remove checkpoints órfãos.
+
+### 2. `--since-days=X` ou `--since=AAAA-MM-DD`: indexa só o período recente
+
+```bash
+php artisan bramon:index --force --since-days=30
+php artisan bramon:index --force --since=2026-01-01
+```
+
+Só capturas com data (do nome do arquivo) maior ou igual ao corte entram no índice. Arquivos antigos são descartados pelo nome antes de qualquer `stat()` ou leitura de XML, então o ganho é proporcional ao volume ignorado. O filtro aplicado fica registrado no manifesto em `filter` (`{"since": "2026-09-15", "since_days": 30}`), deixando claro que os totais cobrem uma janela parcial.
+
+### Estratégia sugerida em hospedagem compartilhada
+
+```bash
+php -d memory_limit=512M artisan bramon:index --force --resume --since-days=90
+```
+
+1. `--since-days` reduz o trabalho à janela que importa;
+2. `--resume` permite repetir o comando até concluir, uma estação por vez, sem perder o progresso;
+3. `BRAMON_INDEX_CHUNK_SIZE=1000` (no `.env`) mantém o pico de memória baixo — o uso agora é limitado pelo chunk, pois os fatos de metadata viajam junto da captura nos blocos ordenados em vez de acumularem em memória.

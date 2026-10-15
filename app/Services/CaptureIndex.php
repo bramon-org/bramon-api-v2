@@ -49,6 +49,18 @@ class CaptureIndex
     private const OFFSET_BYTES = 8;
 
     /**
+     * Checkpoint persisted during a resumable build.
+     *
+     * Written to the staging directory after each station, it records which
+     * stations are already spilled to sorted chunks so an interrupted build
+     * restarts after the last completed station instead of from scratch.
+     */
+    public const CHECKPOINT_FILE = 'checkpoint.json';
+
+    /** Subdirectory of a resumable staging dir holding the sorted chunk runs. */
+    protected const CHUNKS_DIR = 'chunks';
+
+    /**
      * Bytes read from a metadata file when looking for the record tag.
      *
      * The <ufocapture_record> tag is the second line of every capture, so this
@@ -94,11 +106,17 @@ class CaptureIndex
      * Directory a rebuild writes to before publishing.
      *
      * Kept beside the live index so the publishing renames stay within a single
-     * filesystem, and suffixed with the pid so a manual run and a scheduled one
-     * can never stage into the same place.
+     * filesystem. A resumable build (--resume) uses a fixed directory so a retry
+     * finds the previous checkpoint and its sorted chunks; a regular build keeps
+     * the pid suffix so a manual run and a scheduled one can never stage into
+     * the same place.
      */
-    protected function stagingDir(): string
+    protected function stagingDir(bool $resumable = false): string
     {
+        if ($resumable) {
+            return $this->indexDir . '.building';
+        }
+
         return $this->indexDir . '.building-' . getmypid();
     }
 
@@ -956,10 +974,21 @@ class CaptureIndex
      * `exists()` would still be true, so the listing would answer with a wrong
      * total and short or undecodable records instead of failing cleanly.
      *
+     * Large trees should use `['resume' => true]`: the scan then proceeds
+     * station by station, spilling sorted chunks into the staging directory and
+     * recording a checkpoint after each station. An interrupted build keeps that
+     * staging directory, and the next run with `resume` continues after the last
+     * completed station instead of starting over.
+     *
+     * `['since_days' => X]` (or `['since' => 'YYYY-MM-DD']`) indexes only
+     * captures on/after that date, by filename date, for a fast partial index.
+     * The applied filter is recorded in the manifest under `filter`.
+     *
      * @param  callable|null  $progress  Receives (int $filesSeen, string $stage).
+     * @param  array{resume?:bool,fresh?:bool,since_days?:int,since?:string,stations?:array<int,string>|string}  $options
      * @return array<string,mixed> Summary written to the manifest.
      */
-    public function rebuild(FileSystemReader $reader, ?callable $progress = null, int $chunkSize = 20000, ?string $tempDir = null): array
+    public function rebuild(FileSystemReader $reader, ?callable $progress = null, int $chunkSize = 20000, ?string $tempDir = null, array $options = []): array
     {
         if (!is_dir($this->indexDir) && !@mkdir($this->indexDir, 0775, true) && !is_dir($this->indexDir)) {
             throw new RuntimeException("Unable to create index directory: {$this->indexDir}");
@@ -969,109 +998,435 @@ class CaptureIndex
             throw new RuntimeException("Index directory is not writable: {$this->indexDir}");
         }
 
-        $stagingDir = $this->stagingDir();
+        $resume = (bool) ($options['resume'] ?? false);
+        $fresh = (bool) ($options['fresh'] ?? false);
+        $sinceInfo = self::normalizeSinceDate($options);
+
+        $stagingDir = $this->stagingDir($resume);
+
+        if ($resume && $fresh) {
+            $this->discardStaging($stagingDir);
+        }
 
         if (!@mkdir($stagingDir, 0775, true) && !is_dir($stagingDir)) {
             throw new RuntimeException("Unable to create staging directory: {$stagingDir}");
         }
 
+        $ok = false;
+
         try {
-            $manifest = $this->build($reader, $progress, $chunkSize, $stagingDir, $tempDir);
+            $manifest = $this->build($reader, $progress, $chunkSize, $stagingDir, $tempDir, $resume, $sinceInfo, $options);
             $this->publish($stagingDir);
             $this->manifest = null;
             $this->stationAggregates = null;
+            $ok = true;
         } finally {
-            // Whether the build or the publish failed, the previous index has to
-            // keep serving traffic: only the staging directory is abandoned.
-            $this->discardStaging($stagingDir);
+            // A failed resumable build keeps its staging directory (sorted
+            // chunks plus checkpoint) so the next run with `resume` continues
+            // where this one stopped. Every other outcome discards staging, so
+            // the previous index keeps serving traffic and no debris remains.
+            if ($ok || !$resume) {
+                $this->discardStaging($stagingDir);
+            }
         }
 
         return $manifest;
     }
 
     /**
-     * Write a complete index into $stagingDir without touching the live one.
+     * Normalise the date-filter options into a filename-comparable form.
      *
-     * @return array<string,mixed> Summary destined for the manifest.
+     * Filenames carry the capture date as YYYYMMDD, so the cutoff is kept in
+     * that shape for a plain string comparison, alongside the human-readable
+     * form stored in the manifest.
+     *
+     * @param  array{since_days?:mixed,sinceDays?:mixed,since?:mixed}  $options
+     * @return array{since_date:?string,since:?string,since_days:?int}
      */
-    protected function build(FileSystemReader $reader, ?callable $progress, int $chunkSize, string $stagingDir, ?string $tempDir = null): array
+    protected static function normalizeSinceDate(array $options): array
     {
-        // Pass 1: stream files, coalescing them into captures. Spill sorted
-        // chunks so the whole capture set is never held in memory.
-        $sorter = new ExternalSort($chunkSize, true, $tempDir);
+        $none = ['since_date' => null, 'since' => null, 'since_days' => null];
 
-        /** @var array<string,array<string,mixed>> $pending */
-        $pending = [];
-        $filesSeen = 0;
-        $totalFiles = 0;
+        $since = $options['since'] ?? null;
 
-        // Facts extracted from XML metadata, cached per capture so a file is
-        // only opened once no matter how many files share it.
-        /** @var array<string,array{operator:?array<string,string>,geolocation:?array<string,?float>}> $metadataFacts */
-        $metadataFacts = [];
-        /** @var array<string,array<int,array{time:string,observer:string}>> $metadataBySequence */
-        $metadataBySequence = [];
+        if ($since !== null && $since !== '') {
+            $digits = str_replace('-', '', (string) $since);
 
-        foreach ($reader->getFilesGenerator(false) as $file) {
-            $filesSeen++;
+            $dt = \DateTime::createFromFormat('Ymd', $digits);
 
-            if ($filesSeen % 5000 === 0 && $progress !== null) {
-                $progress($filesSeen, 'indexing');
+            if ($dt === false || $dt->format('Ymd') !== $digits) {
+                throw new RuntimeException(
+                    "Invalid date filter '{$since}': expected YYYY-MM-DD or YYYYMMDD."
+                );
             }
 
-            $key = "{$file['station']}_{$file['date']}_{$file['time']}";
-
-            if (($file['type'] ?? null) === 'metadata' && isset($file['path'])) {
-                $facts = $this->readMetadataFacts($file['path']);
-                if (!isset($metadataFacts[$key])) {
-                    $metadataFacts[$key] = $facts;
-                } else {
-                    // Merge operator: prefer non-null operator from any file
-                    if ($metadataFacts[$key]['operator'] === null && $facts['operator'] !== null) {
-                        $metadataFacts[$key]['operator'] = $facts['operator'];
-                    }
-                    // Merge geolocation: prefer non-null geolocation from any file
-                    if ($metadataFacts[$key]['geolocation'] === null && $facts['geolocation'] !== null) {
-                        $metadataFacts[$key]['geolocation'] = $facts['geolocation'];
-                    }
-                }
-
-                $observer = $facts['operator']['name'] ?? null;
-                $sequence = (string) ($file['sequence'] ?? '');
-                if (is_string($observer) && $observer !== '' && $sequence !== '') {
-                    $associationKey = $this->metadataSequenceKey(
-                        (string) $file['station'],
-                        (string) $file['date'],
-                        $sequence
-                    );
-                    $metadataBySequence[$associationKey][] = [
-                        'time' => (string) $file['time'],
-                        'observer' => $observer,
-                    ];
-                }
-            }
-
-            if (!isset($pending[$key])) {
-                if (count($pending) >= $chunkSize) {
-                    $this->flushCaptures($pending, $sorter);
-                    $pending = [];
-                }
-
-                $pending[$key] = $this->newCapture($file);
-            }
-
-            $this->attachFile($pending[$key], $file);
-            $totalFiles++;
+            return [
+                'since_date' => $digits,
+                'since' => $dt->format('Y-m-d'),
+                'since_days' => null,
+            ];
         }
 
-        if ($pending !== []) {
-            $this->flushCaptures($pending, $sorter);
+        $sinceDays = $options['since_days'] ?? $options['sinceDays'] ?? null;
+
+        if ($sinceDays !== null && $sinceDays !== '') {
+            $days = (int) $sinceDays;
+
+            if ($days < 0) {
+                throw new RuntimeException("Invalid --since-days value '{$sinceDays}': expected 0 or more.");
+            }
+
+            $digits = date('Ymd', strtotime("-{$days} days"));
+
+            return [
+                'since_date' => $digits,
+                'since' => date('Y-m-d', strtotime("-{$days} days")),
+                'since_days' => $days,
+            ];
+        }
+
+        return $none;
+    }
+
+    /**
+     * Write a complete index into $stagingDir without touching the live one.
+     *
+     * @param  array{since_date:?string,since:?string,since_days:?int}  $sinceInfo
+     * @param  array{stations?:array<int,string>|string}  $options
+     * @return array<string,mixed> Summary destined for the manifest.
+     */
+    protected function build(FileSystemReader $reader, ?callable $progress, int $chunkSize, string $stagingDir, ?string $tempDir, bool $resume, array $sinceInfo, array $options): array
+    {
+        $sinceDate = $sinceInfo['since_date'];
+        $onlyStations = self::normalizeStationsOption($options['stations'] ?? null);
+
+        // A resumable (or station-scoped) build scans station by station with a
+        // checkpoint after each one; the default path keeps the historical
+        // single-pass scan so existing readers behave exactly as before.
+        $useStationScan = ($resume || $onlyStations !== null)
+            && method_exists($reader, 'stationNames')
+            && method_exists($reader, 'getFilesGeneratorForStation');
+
+        if ($onlyStations !== null && !$useStationScan) {
+            throw new RuntimeException('The stations filter requires a reader with station-scoped scans.');
+        }
+
+        /** @var array<string,array<int,array{time:string,observer:string}>> $metadataBySequence */
+        $metadataBySequence = [];
+        $filesSeen = 0;
+        $totalFiles = 0;
+        $resumed = false;
+
+        if ($useStationScan) {
+            [$sorter, $filesSeen, $totalFiles, $metadataBySequence, $resumed] = $this->scanByStation(
+                $reader,
+                $progress,
+                $chunkSize,
+                $stagingDir,
+                $tempDir,
+                $resume,
+                $sinceDate,
+                $onlyStations
+            );
+        } else {
+            // Pass 1: stream files, coalescing them into captures. Spill sorted
+            // chunks so the whole capture set is never held in memory.
+            $sorter = new ExternalSort($chunkSize, true, $tempDir);
+
+            /** @var array<string,array<string,mixed>> $pending */
             $pending = [];
+
+            foreach ($reader->getFilesGenerator(false) as $file) {
+                $filesSeen++;
+
+                if ($filesSeen % 5000 === 0 && $progress !== null) {
+                    $progress($filesSeen, 'indexing');
+                }
+
+                if ($sinceDate !== null && ($file['date'] ?? '') < $sinceDate) {
+                    continue;
+                }
+
+                $this->ingestFile($file, $pending, $sorter, $metadataBySequence, $chunkSize);
+                $totalFiles++;
+            }
+
+            if ($pending !== []) {
+                $this->flushCaptures($pending, $sorter);
+                $pending = [];
+            }
         }
 
         if ($progress !== null) {
             $progress($filesSeen, 'sorting');
         }
+
+        return $this->writeIndex($sorter, $metadataBySequence, $stagingDir, $progress, $filesSeen, $totalFiles, $sinceInfo, $resumed);
+    }
+
+    /**
+     * Normalise the internal `stations` build option to a sorted name list.
+     *
+     * @param  mixed  $stations
+     * @return array<int,string>|null
+     */
+    protected static function normalizeStationsOption(mixed $stations): ?array
+    {
+        if (is_string($stations)) {
+            $stations = preg_split('/[\s,]+/', $stations, -1, PREG_SPLIT_NO_EMPTY) ?: [];
+        }
+
+        if (!is_array($stations)) {
+            return null;
+        }
+
+        $names = [];
+
+        foreach ($stations as $name) {
+            if (is_string($name) && $name !== '') {
+                $names[] = $name;
+            }
+        }
+
+        if ($names === []) {
+            return null;
+        }
+
+        $names = array_values(array_unique($names));
+        sort($names);
+
+        return $names;
+    }
+
+    /**
+     * Scan the tree station by station, checkpointing after each one.
+     *
+     * Every completed station is flushed to sorted chunks inside the staging
+     * directory and recorded in the checkpoint file, so an interrupted build
+     * resumed with the same filter skips those stations entirely. The date
+     * cutoff is pushed down to the reader, which drops old files from the
+     * filename alone, before any stat() or XML parsing.
+     *
+     * @return array{0:ExternalSort,1:int,2:int,3:array<string,array<int,array{time:string,observer:string}>>,4:bool}
+     *     Sorter, files seen, files indexed, observer candidates, resumed flag.
+     */
+    protected function scanByStation(
+        FileSystemReader $reader,
+        ?callable $progress,
+        int $chunkSize,
+        string $stagingDir,
+        ?string $tempDir,
+        bool $resume,
+        ?string $sinceDate,
+        ?array $onlyStations
+    ): array {
+        $baseDir = $reader->getBaseDir();
+        $stations = $onlyStations ?? $reader->stationNames();
+
+        $chunksDir = $stagingDir . '/' . self::CHUNKS_DIR;
+
+        if ($resume && !@mkdir($chunksDir, 0775, true) && !is_dir($chunksDir)) {
+            throw new RuntimeException("Unable to create checkpoint chunks directory: {$chunksDir}");
+        }
+
+        $checkpoint = $resume ? $this->readCheckpoint($stagingDir) : null;
+        $checkpointValid = $checkpoint !== null
+            && ($checkpoint['base_dir'] ?? null) === $baseDir
+            && ($checkpoint['since_date'] ?? null) === $sinceDate;
+
+        if ($resume && $checkpoint !== null && !$checkpointValid) {
+            // A checkpoint from another source tree or date filter must never
+            // silently skip stations: start over and say so.
+            $this->discardStaging($stagingDir);
+
+            if (!@mkdir($chunksDir, 0775, true) && !is_dir($chunksDir)) {
+                throw new RuntimeException("Unable to create checkpoint chunks directory: {$chunksDir}");
+            }
+
+            if ($progress !== null) {
+                $progress(0, 'checkpoint-discarded');
+            }
+
+            $checkpoint = null;
+        }
+
+        $completed = [];
+        $filesSeen = 0;
+        $totalFiles = 0;
+
+        $sorter = new ExternalSort($chunkSize, true, $resume ? $chunksDir : $tempDir);
+
+        if ($checkpointValid && $checkpoint !== null) {
+            foreach ((array) ($checkpoint['completed_stations'] ?? []) as $name) {
+                $completed[(string) $name] = true;
+            }
+
+            $filesSeen = (int) ($checkpoint['files_seen'] ?? 0);
+            $totalFiles = (int) ($checkpoint['total_files'] ?? 0);
+
+            foreach ((array) ($checkpoint['chunks'] ?? []) as $relative) {
+                $sorter->adoptChunk($stagingDir . '/' . ltrim((string) $relative, '/'));
+            }
+
+            if ($progress !== null) {
+                $progress($filesSeen, 'resumed');
+            }
+        }
+
+        $resumed = $completed !== [];
+
+        /** @var array<string,array<string,mixed>> $pending */
+        $pending = [];
+
+        /** @var array<string,array<int,array{time:string,observer:string}>> $metadataBySequence */
+        $metadataBySequence = [];
+
+        foreach ($stations as $station) {
+            if (isset($completed[$station])) {
+                continue;
+            }
+
+            foreach ($reader->getFilesGeneratorForStation($station, false, $sinceDate) as $file) {
+                $filesSeen++;
+
+                if ($filesSeen % 5000 === 0 && $progress !== null) {
+                    $progress($filesSeen, 'indexing');
+                }
+
+                $this->ingestFile($file, $pending, $sorter, $metadataBySequence, $chunkSize);
+                $totalFiles++;
+            }
+
+            // Completed stations must be durable before checkpointing them:
+            // flush the in-memory buffer to chunks still on this pass.
+            if ($pending !== []) {
+                $this->flushCaptures($pending, $sorter);
+                $pending = [];
+            }
+
+            $completed[$station] = true;
+
+            if ($resume) {
+                $chunks = [];
+
+                foreach ($sorter->chunkFiles() as $absolute) {
+                    $chunks[] = ltrim(substr($absolute, strlen($stagingDir) + 1), '/');
+                }
+
+                $this->writeCheckpoint($stagingDir, [
+                    'version' => 1,
+                    'base_dir' => $baseDir,
+                    'since_date' => $sinceDate,
+                    'completed_stations' => array_keys($completed),
+                    'files_seen' => $filesSeen,
+                    'total_files' => $totalFiles,
+                    'chunks' => $chunks,
+                    'updated_at' => date('c'),
+                ]);
+            }
+
+            if ($progress !== null) {
+                $progress($filesSeen, 'indexing');
+            }
+        }
+
+        return [$sorter, $filesSeen, $totalFiles, $metadataBySequence, $resumed];
+    }
+
+    /**
+     * Fold one filesystem entry into its capture group.
+     *
+     * Operator and geolocation facts are read from XML metadata at scan time
+     * and stored on the pending capture itself, so they travel with it into
+     * the sorted chunks. No per-capture map is ever held in memory, which is
+     * what keeps a multi-million-file scan bounded by the chunk size.
+     *
+     * @param  array<string,array<string,mixed>>  $pending
+     * @param  array<string,array<int,array{time:string,observer:string}>>  $metadataBySequence
+     */
+    protected function ingestFile(array $file, array &$pending, ExternalSort $sorter, array &$metadataBySequence, int $chunkSize): void
+    {
+        $key = "{$file['station']}_{$file['date']}_{$file['time']}";
+
+        if (!isset($pending[$key])) {
+            if (count($pending) >= $chunkSize) {
+                $this->flushCaptures($pending, $sorter);
+                $pending = [];
+            }
+
+            $pending[$key] = $this->newCapture($file);
+        }
+
+        $this->attachFile($pending[$key], $file);
+
+        if (($file['type'] ?? null) === 'metadata' && isset($file['path'])) {
+            $facts = $this->readMetadataFacts($file['path']);
+            $pending[$key]['__facts'] = $this->mergeFacts($pending[$key]['__facts'] ?? null, $facts);
+
+            $observer = $facts['operator']['name'] ?? null;
+            $sequence = (string) ($file['sequence'] ?? '');
+
+            if (is_string($observer) && $observer !== '' && $sequence !== '') {
+                $associationKey = $this->metadataSequenceKey(
+                    (string) $file['station'],
+                    (string) $file['date'],
+                    $sequence
+                );
+                $metadataBySequence[$associationKey][] = [
+                    'time' => (string) $file['time'],
+                    'observer' => $observer,
+                ];
+            }
+        }
+    }
+
+    /**
+     * Combine metadata facts collected for one capture.
+     *
+     * Several metadata files can belong to the same capture; the first
+     * observed operator and position win, exactly as the previous global map
+     * behaved, while a capture with no usable facts stays null.
+     *
+     * @param  array{operator:?array<string,string>,geolocation:?array<string,?float>}|null  $current
+     * @param  array{operator:?array<string,string>,geolocation:?array<string,?float>}  $incoming
+     * @return array{operator:?array<string,string>,geolocation:?array<string,?float>}|null
+     */
+    protected function mergeFacts(?array $current, array $incoming): ?array
+    {
+        if ($current === null) {
+            return ($incoming['operator'] ?? null) === null && ($incoming['geolocation'] ?? null) === null
+                ? null
+                : $incoming;
+        }
+
+        if (($current['operator'] ?? null) === null && ($incoming['operator'] ?? null) !== null) {
+            $current['operator'] = $incoming['operator'];
+        }
+
+        if (($current['geolocation'] ?? null) === null && ($incoming['geolocation'] ?? null) !== null) {
+            $current['geolocation'] = $incoming['geolocation'];
+        }
+
+        return $current;
+    }
+
+    /**
+     * Write the sorted stream, offset table and station blocks into staging.
+     *
+     * @param  array<string,array<int,array{time:string,observer:string}>>  $metadataBySequence
+     * @param  array{since_date:?string,since:?string,since_days:?int}  $sinceInfo
+     * @return array<string,mixed> Summary destined for the manifest.
+     */
+    protected function writeIndex(
+        ExternalSort $sorter,
+        array $metadataBySequence,
+        string $stagingDir,
+        ?callable $progress,
+        int $filesSeen,
+        int $totalFiles,
+        array $sinceInfo,
+        bool $resumed
+    ): array {
 
         // Pass 2: write the sorted stream, offset table and station blocks.
         $capturesHandle = @fopen($this->pathIn($stagingDir, 'captures.ndjson'), 'wb');
@@ -1089,11 +1444,13 @@ class CaptureIndex
         $offset = 0;
         $lineIndex = 0;
 
+        // Station line indices, packed as 8-byte big-endian integers per station
+        // instead of one PHP array entry per capture, so a multi-million
+        // capture set costs ~8 bytes per capture here rather than a zval each.
+        /** @var array<string,string> $byStationRecords */
         $byStationRecords = [];
 
         foreach ($sorter->sorted() as [$sortKey, $capture]) {
-            $captureKey = $capture['station'] . '_' . $capture['capture_date'] . '_' . $capture['capture_time'];
-
             $associationKey = $this->metadataSequenceKey(
                 (string) $capture['station'],
                 (string) $capture['capture_date'],
@@ -1104,6 +1461,11 @@ class CaptureIndex
                 (string) $capture['capture_time']
             );
             unset($capture['_metadata_sequence']);
+
+            // Operator/geolocation facts travelled with the capture through the
+            // sorted chunks (see ingestFile()): they never touch the index payload.
+            $facts = $capture['__facts'] ?? null;
+            unset($capture['__facts']);
 
             $line = json_encode($capture, JSON_UNESCAPED_UNICODE | JSON_INVALID_UTF8_SUBSTITUTE);
 
@@ -1164,19 +1526,17 @@ class CaptureIndex
             // Pass 2 walks the captures newest first, so the first capture that
             // carries an operator or a usable fix is the most recent one that
             // does. Later captures only fill what is still missing.
-            $facts = $metadataFacts[$captureKey] ?? null;
-
-            if ($facts !== null) {
-                if ($aggregates[$station]['operator'] === null && $facts['operator'] !== null) {
+            if (is_array($facts)) {
+                if ($aggregates[$station]['operator'] === null && ($facts['operator'] ?? null) !== null) {
                     $aggregates[$station]['operator'] = $facts['operator'];
                 }
 
-                if ($aggregates[$station]['geolocation'] === null && $facts['geolocation'] !== null) {
+                if ($aggregates[$station]['geolocation'] === null && ($facts['geolocation'] ?? null) !== null) {
                     $aggregates[$station]['geolocation'] = $facts['geolocation'];
                 }
             }
 
-            $byStationRecords[$station][] = $lineIndex;
+            $byStationRecords[$station] = ($byStationRecords[$station] ?? '') . pack('J', $lineIndex);
 
             $totalCaptures++;
             $lineIndex++;
@@ -1188,8 +1548,6 @@ class CaptureIndex
         $this->sync($linesHandle);
         fclose($linesHandle);
 
-        unset($metadataFacts);
-
         if ($progress !== null) {
             $progress($filesSeen, 'writing-station-index');
         }
@@ -1198,14 +1556,20 @@ class CaptureIndex
         // station page can be answered with two seeks.
         $blocks = [];
         $blockHandle = @fopen($this->pathIn($stagingDir, 'by-station.ndjson'), 'wb');
+
+        if ($blockHandle === false) {
+            throw new RuntimeException("Unable to open station index output file in {$this->indexDir}");
+        }
+
         $blockOffset = 0;
 
         ksort($aggregates);
 
-        foreach ($byStationRecords as $station => $indices) {
+        foreach ($byStationRecords as $station => $packed) {
+            $count = (int) (strlen($packed) / self::OFFSET_BYTES);
             $payload = '';
 
-            foreach ($indices as $i) {
+            foreach (unpack('J*', $packed) ?: [] as $i) {
                 $payload .= $station . "\t" . $i . "\n";
             }
 
@@ -1217,7 +1581,7 @@ class CaptureIndex
 
             $blocks[$station] = [
                 'offset' => $blockOffset,
-                'count' => count($indices),
+                'count' => $count,
             ];
 
             $blockOffset += strlen($payload);
@@ -1248,6 +1612,14 @@ class CaptureIndex
             'latest' => $latest,
             'captures_by_month' => $byMonth,
             'station_aggregates' => $aggregates,
+            // Null on a full build; otherwise the date cutoff this index was
+            // built with, so readers know the totals cover a recent window.
+            'filter' => $sinceInfo['since_date'] !== null
+                ? ['since' => $sinceInfo['since'], 'since_days' => $sinceInfo['since_days']]
+                : null,
+            // True when this build adopted sorted chunks from a checkpoint left
+            // by an interrupted run instead of scanning everything itself.
+            'resumed' => $resumed,
         ];
 
         // Write to a temporary file, flush it to disk, then rename it into
@@ -1298,6 +1670,67 @@ class CaptureIndex
     }
 
     /**
+     * Read the checkpoint of an interrupted resumable build, if any.
+     */
+    protected function readCheckpoint(string $stagingDir): ?array
+    {
+        $path = $this->pathIn($stagingDir, self::CHECKPOINT_FILE);
+
+        if (!is_file($path)) {
+            return null;
+        }
+
+        $raw = @file_get_contents($path);
+
+        if ($raw === false) {
+            return null;
+        }
+
+        $decoded = json_decode($raw, true);
+
+        return is_array($decoded) ? $decoded : null;
+    }
+
+    /**
+     * Persist a build checkpoint atomically.
+     *
+     * Written via tmp+rename like the manifest, so a crash mid-write leaves
+     * the previous checkpoint intact instead of a half-written JSON file.
+     *
+     * @param  array<string,mixed>  $checkpoint
+     */
+    protected function writeCheckpoint(string $stagingDir, array $checkpoint): void
+    {
+        $path = $this->pathIn($stagingDir, self::CHECKPOINT_FILE);
+        $tmp = $path . '.tmp';
+        $json = $this->encodeJson($checkpoint);
+
+        $written = file_put_contents($tmp, $json, LOCK_EX);
+
+        if ($written === false || $written !== strlen($json)) {
+            @unlink($tmp);
+            throw new RuntimeException("Failed to write index checkpoint to {$tmp}");
+        }
+
+        $handle = @fopen($tmp, 'r+');
+
+        if ($handle) {
+            fflush($handle);
+
+            if (function_exists('fsync')) {
+                @fsync($handle);
+            }
+
+            fclose($handle);
+        }
+
+        if (!rename($tmp, $path)) {
+            @unlink($tmp);
+            throw new RuntimeException("Failed to publish index checkpoint to {$path}");
+        }
+    }
+
+    /**
      * Rename the staged artefacts into the live index.
      *
      * `rename()` within a directory is atomic, so a concurrent reader opens
@@ -1330,6 +1763,9 @@ class CaptureIndex
 
     /**
      * Remove a staging directory and anything left in it.
+     *
+     * Recursive: a resumable staging dir also holds the checkpoint file and
+     * the sorted-chunk subdirectory, unlike a regular pid-suffixed one.
      */
     protected function discardStaging(string $stagingDir): void
     {
@@ -1337,11 +1773,14 @@ class CaptureIndex
             return;
         }
 
-        foreach (self::FILES as $file) {
-            @unlink($this->pathIn($stagingDir, $file));
-        }
+        $items = new \RecursiveIteratorIterator(
+            new \RecursiveDirectoryIterator($stagingDir, \FilesystemIterator::SKIP_DOTS),
+            \RecursiveIteratorIterator::CHILD_FIRST
+        );
 
-        @unlink($this->pathIn($stagingDir, 'manifest.json.tmp'));
+        foreach ($items as $item) {
+            $item->isDir() ? @rmdir($item->getPathname()) : @unlink($item->getPathname());
+        }
 
         @rmdir($stagingDir);
     }
@@ -1424,6 +1863,10 @@ class CaptureIndex
             'capture_time' => $time,
             'observer' => null,
             '_metadata_sequence' => (string) ($file['sequence'] ?? ''),
+            // Operator/geolocation facts read from this capture's XML metadata
+            // (see ingestFile()). Carried through the sorted chunks into Pass 2
+            // and stripped before the capture is written to the index.
+            '__facts' => null,
             'files' => [],
             'file_count' => 0,
             'has_metadata' => false,
@@ -1635,7 +2078,7 @@ class CaptureIndex
     /* ------------------------------------------------------------------ */
 
     /**
-     * Delete every index artefact.
+     * Delete every index artefact, plus any resumable-build staging left behind.
      */
     public function flush(): void
     {
@@ -1645,6 +2088,14 @@ class CaptureIndex
             if (is_file($path)) {
                 @unlink($path);
             }
+        }
+
+        // A checkpoint from an interrupted --resume build survives the crash on
+        // purpose; flushing the index discards it as well.
+        $this->discardStaging($this->stagingDir(true));
+
+        foreach (glob($this->indexDir . '.building-*', GLOB_ONLYDIR) ?: [] as $orphan) {
+            $this->discardStaging($orphan);
         }
 
         $this->manifest = null;

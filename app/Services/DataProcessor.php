@@ -311,7 +311,13 @@ class DataProcessor
 
         // Stream files from the filesystem, aggregating by station
         foreach ($this->fileReader->getFilesGenerator(false) as $file) {
-            $station = $file['station'];
+            // Nome de estação vem do nome do diretório: bytes do SO, sem
+            // garantia de UTF-8. Normaliza antes de usar como chave e de
+            // propagar para o JSON final.
+            $station = $this->toUtf8((string) ($file['station'] ?? ''));
+            if ($station === '') {
+                continue;
+            }
             $capturedAt = null;
 
             // Parse datetime from filename
@@ -439,6 +445,8 @@ class DataProcessor
      */
     protected function buildStationFromData(string $stationName, ?array $stationData, ?array $aggregate, ?array $geolocation = null, ?array $operatorFromMetadata = null, ?array $cameraParams = null): array
     {
+        $stationName = $this->toUtf8($stationName);
+
         // Determine city/state: use curated data if available, otherwise reverse geocode from measured geolocation
         $city = $stationData['city'] ?? 'Unknown';
         $state = $stationData['state'] ?? 'Unknown';
@@ -464,28 +472,88 @@ class DataProcessor
         }
 
         return [
-            'id' => $stationData['id'] ?? substr(md5($stationName), 0, 32),
+            'id' => $this->toUtf8((string) ($stationData['id'] ?? substr(md5($stationName), 0, 32))),
             'name' => $stationName,
             'operador' => null,
-            'operator_from_metadata' => $operatorFromMetadata,
-            'city' => $city,
-            'state' => $state,
-            'country' => $country,
+            'operator_from_metadata' => $this->sanitizeForJson($operatorFromMetadata),
+            'city' => $this->toUtf8((string) $city),
+            'state' => $this->toUtf8((string) $state),
+            'country' => $this->toUtf8((string) $country),
             'latitude' => $this->measuredFloat($geolocation, 'latitude') ?? (float) ($stationData['latitude'] ?? 0),
             'longitude' => $this->measuredFloat($geolocation, 'longitude') ?? (float) ($stationData['longitude'] ?? 0),
             'altitude' => $this->measuredFloat($geolocation, 'altitude') ?? $this->curatedAltitude($stationData),
             'azimuth' => $cameraParams['azimuth'] ?? (float) ($stationData['azimuth'] ?? 0),
             'elevation' => $cameraParams['elevation'] ?? (float) ($stationData['elevation'] ?? 0),
             'fov' => $cameraParams['fov'] ?? (float) ($stationData['fov'] ?? 0),
-            'camera_model' => $cameraParams['model'] ?? $stationData['camera_model'] ?? 'Unknown',
-            'camera_lens' => $cameraParams['lens'] ?? $stationData['camera_lens'] ?? 'Unknown',
-            'camera_capture' => $cameraParams['capture'] ?? $stationData['camera_capture'] ?? 'Unknown',
+            'camera_model' => $this->toUtf8((string) ($cameraParams['model'] ?? $stationData['camera_model'] ?? 'Unknown')),
+            'camera_lens' => $this->toUtf8((string) ($cameraParams['lens'] ?? $stationData['camera_lens'] ?? 'Unknown')),
+            'camera_capture' => $this->toUtf8((string) ($cameraParams['capture'] ?? $stationData['camera_capture'] ?? 'Unknown')),
             'active' => (bool) ($stationData['active'] ?? true),
             'visible' => (bool) ($stationData['visible'] ?? true),
             'capture_count' => (int) ($aggregate['capture_count'] ?? 0),
             'first_capture' => $aggregate['first_capture'] ?? null,
             'last_capture' => $aggregate['last_capture'] ?? null,
         ];
+    }
+
+    /**
+     * Coerce a string into valid UTF-8.
+     *
+     * Nomes de estação vêm do filesystem e observer/câmera vêm do XML de
+     * metadados — nenhum dos dois garante UTF-8. Valores já válidos passam
+     * intactos; o resto é tratado como Windows-1252 (superset de Latin-1) e
+     * convertido, para que "São Paulo"/"José" sobrevivam em vez de quebrar
+     * o json_encode(). Como último recurso, bytes inválidos viram U+FFFD.
+     */
+    protected function toUtf8(string $value): string
+    {
+        if ($value === '' || mb_check_encoding($value, 'UTF-8')) {
+            return $this->stripControls($value);
+        }
+
+        $converted = mb_convert_encoding($value, 'UTF-8', 'Windows-1252');
+
+        if (!mb_check_encoding($converted, 'UTF-8')) {
+            $converted = mb_convert_encoding($converted, 'UTF-8', 'UTF-8');
+        }
+
+        return $this->stripControls($converted);
+    }
+
+    /**
+     * Remove caracteres de controle que poluem JSON e quebram consumidores.
+     */
+    protected function stripControls(string $value): string
+    {
+        return preg_replace('/[\x00-\x08\x0B\x0C\x0E-\x1F\x7F]/u', '', $value) ?? '';
+    }
+
+    /**
+     * Sanitiza recursivamente qualquer estrutura para json_encode().
+     *
+     * Percorre arrays e converte todas as strings para UTF-8 válido; outras
+     * escalas problemáticas (INF/NAN floats) são normalizadas para null/0.
+     */
+    protected function sanitizeForJson(mixed $value): mixed
+    {
+        if (is_string($value)) {
+            return $this->toUtf8($value);
+        }
+
+        if (is_array($value)) {
+            $out = [];
+            foreach ($value as $k => $v) {
+                $key = is_string($k) ? $this->toUtf8($k) : $k;
+                $out[$key] = $this->sanitizeForJson($v);
+            }
+            return $out;
+        }
+
+        if (is_float($value) && (!is_finite($value))) {
+            return null;
+        }
+
+        return $value;
     }
 
     /**
@@ -598,7 +666,7 @@ class DataProcessor
             $match = $this->operatorReader->findOperatorForStation($stationName, $rawOperators);
 
             if ($match !== null) {
-                $station['operador'] = $operatorsById[(string) ($match['id'] ?? '')] ?? null;
+                $station['operador'] = $this->sanitizeForJson($operatorsById[(string) ($match['id'] ?? '')] ?? null);
                 continue;
             }
 
@@ -606,7 +674,7 @@ class DataProcessor
             $declaredId = $metadata[$stationName]['operador'] ?? null;
 
             if (is_string($declaredId) && $declaredId !== '') {
-                $station['operador'] = $operatorsById[$declaredId] ?? null;
+                $station['operador'] = $this->sanitizeForJson($operatorsById[$declaredId] ?? null);
                 continue;
             }
 
@@ -615,10 +683,10 @@ class DataProcessor
                 $metaOp = $operatorsFromMetadata[$stationName];
                 // Try to match by id first
                 if (isset($operatorsById[$metaOp['id']])) {
-                    $station['operador'] = $operatorsById[$metaOp['id']];
+                    $station['operador'] = $this->sanitizeForJson($operatorsById[$metaOp['id']]);
                 } else {
                     // Create a minimal operator object from metadata
-                    $station['operador'] = [
+                    $station['operador'] = $this->sanitizeForJson([
                         'id' => $metaOp['id'],
                         'name' => $metaOp['name'],
                         'email' => $metaOp['email'],
@@ -630,7 +698,7 @@ class DataProcessor
                         'latitude' => null,
                         'longitude' => null,
                         'altitude' => null,
-                    ];
+                    ]);
                 }
                 continue;
             }
@@ -658,6 +726,7 @@ class DataProcessor
      */
     protected function buildStation(string $stationName, ?array $stationData, ?array $aggregate): array
     {
+        $stationName = $this->toUtf8($stationName);
         $geolocation = is_array($aggregate['geolocation'] ?? null) ? $aggregate['geolocation'] : null;
 
         // Determine city/state: use curated data if available, otherwise reverse geocode from measured geolocation
@@ -685,21 +754,21 @@ class DataProcessor
         }
 
         return [
-            'id' => $stationData['id'] ?? substr(md5($stationName), 0, 32),
+            'id' => $this->toUtf8((string) ($stationData['id'] ?? substr(md5($stationName), 0, 32))),
             'name' => $stationName,
             'operador' => null,
-            'city' => $city,
-            'state' => $state,
-            'country' => $country,
+            'city' => $this->toUtf8((string) $city),
+            'state' => $this->toUtf8((string) $state),
+            'country' => $this->toUtf8((string) $country),
             'latitude' => $this->measuredFloat($geolocation, 'latitude') ?? (float) ($stationData['latitude'] ?? 0),
             'longitude' => $this->measuredFloat($geolocation, 'longitude') ?? (float) ($stationData['longitude'] ?? 0),
             'altitude' => $this->measuredFloat($geolocation, 'altitude') ?? $this->curatedAltitude($stationData),
             'azimuth' => (float) ($stationData['azimuth'] ?? 0),
             'elevation' => (float) ($stationData['elevation'] ?? 0),
             'fov' => (float) ($stationData['fov'] ?? 0),
-            'camera_model' => $stationData['camera_model'] ?? 'Unknown',
-            'camera_lens' => $stationData['camera_lens'] ?? 'Unknown',
-            'camera_capture' => $stationData['camera_capture'] ?? 'Unknown',
+            'camera_model' => $this->toUtf8((string) ($stationData['camera_model'] ?? 'Unknown')),
+            'camera_lens' => $this->toUtf8((string) ($stationData['camera_lens'] ?? 'Unknown')),
+            'camera_capture' => $this->toUtf8((string) ($stationData['camera_capture'] ?? 'Unknown')),
             'active' => (bool) ($stationData['active'] ?? true),
             'visible' => (bool) ($stationData['visible'] ?? true),
             'capture_count' => (int) ($aggregate['count'] ?? 0),
@@ -803,6 +872,12 @@ class DataProcessor
         $observer = preg_match('/\bobserver="([^"]*)"/', $tag, $match) === 1 ? trim($match[1]) : '';
         $lid = preg_match('/\blid="([^"]*)"/', $tag, $match) === 1 ? trim($match[1]) : '';
 
+        // Metadata XML não garante UTF-8 (ex.: Latin-1/Windows-1252).
+        // Sem conversão, um único byte inválido faz json_encode() retornar
+        // false na geração de stations.json.
+        $observer = $this->toUtf8($observer);
+        $lid = $this->toUtf8($lid);
+
         $operator = null;
         $name = $observer !== '' ? $observer : $lid;
         if ($name !== '') {
@@ -827,9 +902,9 @@ class DataProcessor
                 'azimuth' => $hasAz && is_numeric(trim($azMatch[1])) ? (float) trim($azMatch[1]) : 0.0,
                 'elevation' => $hasEl && is_numeric(trim($elMatch[1])) ? (float) trim($elMatch[1]) : 0.0,
                 'fov' => $hasFov && is_numeric(trim($fovMatch[1])) ? (float) trim($fovMatch[1]) : 0.0,
-                'model' => $hasCam ? trim($camMatch[1]) : 'Unknown',
-                'lens' => $hasLens ? trim($lensMatch[1]) : 'Unknown',
-                'capture' => $hasCap ? trim($capMatch[1]) : 'Unknown',
+                'model' => $hasCam ? $this->toUtf8(trim($camMatch[1])) : 'Unknown',
+                'lens' => $hasLens ? $this->toUtf8(trim($lensMatch[1])) : 'Unknown',
+                'capture' => $hasCap ? $this->toUtf8(trim($capMatch[1])) : 'Unknown',
             ];
         }
 
@@ -890,9 +965,9 @@ class DataProcessor
      */
     protected function buildOperator(array $opData, array $linkedStations): array
     {
-        $linkedStations = array_values($linkedStations);
+        $linkedStations = array_values(array_map(fn($s) => is_string($s) ? $this->toUtf8($s) : $s, $linkedStations));
 
-        return array_merge([
+        return $this->sanitizeForJson(array_merge([
             'id' => $opData['id'] ?? substr(md5($opData['email'] ?? ''), 0, 32),
             'name' => $opData['nome'] ?? $opData['name'] ?? 'Operador Desconhecido',
             'email' => $opData['email'] ?? '',
@@ -901,7 +976,7 @@ class DataProcessor
             'active' => (bool) ($opData['ativo'] ?? $opData['active'] ?? true),
             'station_count' => count($linkedStations),
             'stations' => $linkedStations,
-        ], $this->operatorGeolocation($linkedStations));
+        ], $this->operatorGeolocation($linkedStations)));
     }
 
     /**
@@ -945,12 +1020,13 @@ class DataProcessor
      */
     protected function buildFallbackOperator(string $stationName): array
     {
+        $stationName = $this->toUtf8($stationName);
         $recorded = $this->index?->stationOperator($stationName);
 
-        $recordedName = is_string($recorded['name'] ?? null) ? trim($recorded['name']) : '';
-        $recordedEmail = is_string($recorded['email'] ?? null) ? trim($recorded['email']) : '';
+        $recordedName = is_string($recorded['name'] ?? null) ? $this->toUtf8(trim($recorded['name'])) : '';
+        $recordedEmail = is_string($recorded['email'] ?? null) ? $this->toUtf8(trim($recorded['email'])) : '';
 
-        return array_merge([
+        return $this->sanitizeForJson(array_merge([
             'id' => substr(md5("op_{$stationName}"), 0, 32),
             'name' => $recordedName !== '' ? $recordedName : "Operador {$stationName}",
             'email' => $recordedEmail !== ''
@@ -961,7 +1037,7 @@ class DataProcessor
             'active' => true,
             'station_count' => 1,
             'stations' => [$stationName],
-        ], $this->operatorGeolocation([$stationName]));
+        ], $this->operatorGeolocation([$stationName])));
     }
 
     /**

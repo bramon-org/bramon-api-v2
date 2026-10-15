@@ -51,30 +51,41 @@ class StationsGenerate extends Command
         $stationsJson = [];
 
         foreach ($stations as $station) {
+            $op = $station['operador'] ?? '';
+            $opId = is_array($op) ? ($op['id'] ?? '') : $op;
+
             $stationsJson[] = [
-                'id' => $station['id'],
-                'name' => $station['name'],
-                'operador' => $station['operador']['id'] ?? '',
-                'city' => $station['city'] ?? 'Unknown',
-                'state' => $station['state'] ?? 'Unknown',
-                'country' => $station['country'] ?? 'BR',
-                'latitude' => $station['latitude'] ?? 0.0,
-                'longitude' => $station['longitude'] ?? 0.0,
-                'azimuth' => $station['azimuth'] ?? 0.0,
-                'elevation' => $station['elevation'] ?? 0.0,
-                'fov' => $station['fov'] ?? 0.0,
-                'camera_model' => $station['camera_model'] ?? 'Unknown',
-                'camera_lens' => $station['camera_lens'] ?? 'Unknown',
-                'camera_capture' => $station['camera_capture'] ?? 'Unknown',
+                'id' => $this->cleanString($station['id'] ?? ''),
+                'name' => $this->cleanString($station['name'] ?? ''),
+                'operador' => $this->cleanString($opId),
+                'city' => $this->cleanString($station['city'] ?? 'Unknown'),
+                'state' => $this->cleanString($station['state'] ?? 'Unknown'),
+                'country' => $this->cleanString($station['country'] ?? 'BR'),
+                'latitude' => $this->cleanFloat($station['latitude'] ?? 0.0),
+                'longitude' => $this->cleanFloat($station['longitude'] ?? 0.0),
+                'azimuth' => $this->cleanFloat($station['azimuth'] ?? 0.0),
+                'elevation' => $this->cleanFloat($station['elevation'] ?? 0.0),
+                'fov' => $this->cleanFloat($station['fov'] ?? 0.0),
+                'camera_model' => $this->cleanString($station['camera_model'] ?? 'Unknown'),
+                'camera_lens' => $this->cleanString($station['camera_lens'] ?? 'Unknown'),
+                'camera_capture' => $this->cleanString($station['camera_capture'] ?? 'Unknown'),
                 'active' => $station['active'] ?? true,
                 'visible' => $station['visible'] ?? true,
             ];
         }
 
-        $json = json_encode($stationsJson, JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE);
+        $json = json_encode($stationsJson, JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE | JSON_INVALID_UTF8_SUBSTITUTE);
 
         if ($json === false) {
-            $this->error('Failed to encode stations as JSON');
+            $this->error('Failed to encode stations as JSON: ' . json_last_error_msg());
+
+            foreach ($stationsJson as $i => $row) {
+                if (json_encode($row, JSON_UNESCAPED_UNICODE | JSON_INVALID_UTF8_SUBSTITUTE) === false) {
+                    $this->error("Error encoding station at index {$i} (" . ($row['name'] ?? '?') . '): ' . json_last_error_msg());
+                    break;
+                }
+            }
+
             return self::FAILURE;
         }
 
@@ -102,5 +113,36 @@ class StationsGenerate extends Command
         }
 
         return number_format($bytes, $i === 0 ? 0 : 1) . ' ' . $units[$i];
+    }
+
+    /**
+     * Normaliza string para JSON: converte Latin-1/Windows-1252 para UTF-8
+     * e remove controles. Cobre todos os campos de texto da estação.
+     */
+    protected function cleanString(mixed $value): string
+    {
+        $value = (string) ($value ?? '');
+
+        if ($value !== '' && !mb_check_encoding($value, 'UTF-8')) {
+            $value = mb_convert_encoding($value, 'UTF-8', 'Windows-1252');
+        }
+
+        $clean = preg_replace('/[\x00-\x08\x0B\x0C\x0E-\x1F\x7F]/u', '', $value);
+
+        return $clean ?? '';
+    }
+
+    /**
+     * Normaliza número para JSON (evita INF/NAN que também quebram encode).
+     */
+    protected function cleanFloat(mixed $value): float
+    {
+        if (!is_numeric($value)) {
+            return 0.0;
+        }
+
+        $float = (float) $value;
+
+        return is_finite($float) ? $float : 0.0;
     }
 }

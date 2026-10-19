@@ -375,7 +375,7 @@
                     "Operators"
                 ],
                 "summary": "Lista operadores",
-                "description": "Devolve os operadores paginados. Cada operador carrega a lista de estações sob sua responsabilidade. Lido diretamente de operators.json (BRAMON_OPERATORS_FILE) e stations.json (BRAMON_STATIONS_FILE), sem depender do índice de capturas.",
+                "description": "Devolve os operadores paginados. Cada operador carrega a lista de estações sob sua responsabilidade. Construído a partir de operators.json cruzado com as estações do índice, sem varrer o disco de capturas.",
                 "operationId": "listOperators",
                 "parameters": [
                     {
@@ -421,7 +421,7 @@
                     "Operators"
                 ],
                 "summary": "Detalha um operador",
-                "description": "Devolve um operador pelo seu identificador, com a lista de estações vinculadas. Lido diretamente de operators.json (BRAMON_OPERATORS_FILE) e stations.json (BRAMON_STATIONS_FILE), sem depender do índice de capturas.",
+                "description": "Devolve um operador pelo seu identificador, com a lista de estações vinculadas.",
                 "operationId": "getOperator",
                 "parameters": [
                     {
@@ -465,7 +465,7 @@
                     "Stations"
                 ],
                 "summary": "Lista estações",
-                "description": "Devolve as estações paginadas, ordenadas alfabeticamente por nome. Lido diretamente de stations.json (BRAMON_STATIONS_FILE) e operators.json (BRAMON_OPERATORS_FILE), sem depender do índice de capturas. O nó \"operador\" traz o operador responsável, com o mesmo formato de /operators, resolvido pelo nome da estação.",
+                "description": "Devolve as estações paginadas, ordenadas alfabeticamente por nome. Todos os campos vêm do manifesto do índice; nenhuma pasta de capturas é aberta. O nó \"operador\" traz o operador responsável, com o mesmo formato de /operators, resolvido pelo nome da estação.",
                 "operationId": "listStations",
                 "parameters": [
                     {
@@ -511,7 +511,7 @@
                     "Stations"
                 ],
                 "summary": "Detalha uma estação",
-                "description": "Devolve uma estação pelo seu código/nome, incluindo o operador responsável (nó \"operador\", mesmo formato de /operators). Lido diretamente de stations.json (BRAMON_STATIONS_FILE) e operators.json (BRAMON_OPERATORS_FILE), sem depender do índice de capturas.",
+                "description": "Devolve uma estação pelo seu código/nome, incluindo a contagem de capturas, a janela de atividade e o operador responsável (nó \"operador\", mesmo formato de /operators). Os metadados vêm de stations.json; apenas os agregados de captura vêm do índice.",
                 "operationId": "getStation",
                 "parameters": [
                     {
@@ -1072,6 +1072,7 @@
                     "captured_at",
                     "capture_date",
                     "capture_time",
+                    "observer",
                     "files",
                     "file_count"
                 ],
@@ -1097,6 +1098,11 @@
                         "type": "string",
                         "example": "235120"
                     },
+                    "observer": {
+                        "type": "string",
+                        "example": "Observer Name",
+                        "nullable": true
+                    },
                     "files": {
                         "description": "Arquivos associados à captura.",
                         "type": "array",
@@ -1117,6 +1123,57 @@
                         "example": true
                     },
                     "has_thumbnail": {
+                        "type": "boolean",
+                        "example": true
+                    },
+                    "has_analyze": {
+                        "description": "Indica que a captura possui arquivo de análise (sufixo A.xml).",
+                        "type": "boolean",
+                        "example": true
+                    },
+                    "class": {
+                        "description": "Classificação da trail registrada no XML de análise (ufoanalyzer_record.ua2_object.class). Null quando a captura não possui análise.",
+                        "type": "string",
+                        "example": "J8_PPH",
+                        "nullable": true
+                    },
+                    "fs": {
+                        "description": "Frame inicial da trail, lido do XML de análise.",
+                        "type": "number",
+                        "format": "double",
+                        "example": 61,
+                        "nullable": true
+                    },
+                    "fe": {
+                        "description": "Frame final da trail, lido do XML de análise.",
+                        "type": "number",
+                        "format": "double",
+                        "example": 70,
+                        "nullable": true
+                    },
+                    "sec": {
+                        "description": "Duração da trail em segundos, lida do XML de análise.",
+                        "type": "number",
+                        "format": "double",
+                        "example": 0.15015,
+                        "nullable": true
+                    },
+                    "av": {
+                        "description": "Velocidade angular média da trail, lida do XML de análise.",
+                        "type": "number",
+                        "format": "double",
+                        "example": 5.019607,
+                        "nullable": true
+                    },
+                    "mag": {
+                        "description": "Magnitude estimada da trail, lida do XML de análise.",
+                        "type": "number",
+                        "format": "double",
+                        "example": -1.838501,
+                        "nullable": true
+                    },
+                    "analyzed": {
+                        "description": "Indica que o XML de análise da captura trouxe pelo menos um destes dados.",
                         "type": "boolean",
                         "example": true
                     }
@@ -1218,18 +1275,16 @@
                         "example": true
                     },
                     "capture_count": {
-                        "description": "Total de capturas. Vem do índice quando disponível; 0 quando o índice não foi construído.",
+                        "description": "Total de capturas, servido a partir do índice.",
                         "type": "integer",
                         "example": 307
                     },
                     "first_capture": {
-                        "description": "Primeira captura registrada. Vem do índice quando disponível; null quando o índice não foi construído.",
                         "type": "string",
                         "example": "2026-06-02 05:51:06",
                         "nullable": true
                     },
                     "last_capture": {
-                        "description": "Última captura registrada. Vem do índice quando disponível; null quando o índice não foi construído.",
                         "type": "string",
                         "example": "2026-09-30 08:44:23",
                         "nullable": true
@@ -1356,7 +1411,7 @@
                 "description": "Intervalo de datas coberto pelo índice.",
                 "properties": {
                     "earliest": {
-                        "description": "Schemas for the statistics and search endpoints.",
+                        "description": "Schemas for the statistics endpoint.",
                         "type": "string",
                         "example": "2026-06-02 00:04:13",
                         "nullable": true

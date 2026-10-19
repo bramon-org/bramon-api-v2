@@ -109,7 +109,7 @@ class IndexBuild extends Command
                         $this->info("  Resumed: checkpoint restored ({$filesSeen} files already indexed)");
                     } elseif ($stage === 'checkpoint-discarded') {
                         $this->newLine();
-                        $this->warn('  Previous checkpoint was for another source/filter; starting over.');
+                        $this->warn('  Previous checkpoint was for another source, filter or version; starting over.');
                     } else {
                         $this->newLine();
                     }

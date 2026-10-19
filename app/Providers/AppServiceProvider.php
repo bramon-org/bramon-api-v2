@@ -2,6 +2,7 @@
 
 namespace App\Providers;
 
+use App\Services\AnalyzeReader;
 use App\Services\CaptureIndex;
 use App\Services\DataProcessor;
 use App\Services\FileSystemReader;
@@ -44,7 +45,8 @@ class AppServiceProvider extends ServiceProvider
         $this->app->singleton(CaptureIndex::class, function ($app) {
             return new CaptureIndex(
                 Config::get('bramon.index_dir'),
-                (bool) Config::get('bramon.index_auto_build', false)
+                (bool) Config::get('bramon.index_auto_build', false),
+                $app->make(AnalyzeReader::class)
             );
         });
 
@@ -57,7 +59,8 @@ class AppServiceProvider extends ServiceProvider
                 // Lets a station without an operators.json entry be described by
                 // the operator its captures actually recorded.
                 $app->make(CaptureIndex::class),
-                $app->make(GeocodingService::class)
+                $app->make(GeocodingService::class),
+                $app->make(AnalyzeReader::class)
             );
         });
     }

@@ -103,14 +103,21 @@ export interface Capture {
   has_metadata: boolean;
   has_preview: boolean;
   has_thumbnail: boolean;
-  /** ⚠️ Sempre null na API atual. Ver " Campos mortos". Não construa UI sobre eles. */
+  /** A captura tem arquivo de análise (sufixo A.xml). */
+  has_analyze: boolean;
+  /** Classificação da trail, lida do XML de análise. Null sem classificação. */
   class: string | null;
+  /** Frame inicial da trail. Null sem análise. */
   fs: number | null;
+  /** Frame final da trail. Null sem análise. */
   fe: number | null;
+  /** Duração da trail em segundos. Null sem análise. */
   sec: number | null;
+  /** Velocidade angular média da trail. Null sem análise. */
   av: number | null;
+  /** Magnitude estimada da trail. Null sem análise. */
   mag: number | null;
-  /** ⚠️ Sempre false, mesmo quando existe arquivo 'analyze'. */
+  /** O XML de análise trouxe pelo menos um destes dados. */
   analyzed: boolean;
 }
 
@@ -392,7 +399,7 @@ denial-of-service para a própria API.
 | 10 | Filtro `station` é case-insensitive | Case-sensitive. `tlp1` → 0 resultados |
 | 11 | `/stats.captures_by_month` é objeto | É **array de números sem rótulo** ⚠️ bug do backend |
 | 12 | `/stats.captures_by_station` tem dados | Sempre `[]` ⚠️ bug do backend |
-| 13 | `capture.analyzed` indica análise | Sempre `false` ⚠️ campos mortos |
+| 13 | `capture.analyzed` indica análise | Só depois de `bramon:index`; `null`/`false` sem arquivo `A.xml` |
 | 14 | Busca aceita `q` vazio | 422 — `q` é obrigatório |
 
 ### Helper de data obrigatório
@@ -415,19 +422,41 @@ não passe para `new Date()`.
 
 ---
 
-## 💀 Campos mortos — não construir UI sobre eles
+## 🔭 Análise da captura — `class`, `fs`, `fe`, `sec`, `av`, `mag`
 
-`Capture.class`, `.fs`, `.fe`, `.sec`, `.av`, `.mag` e `.analyzed` **sempre chegam
-`null`/`false`**, mesmo em capturas que possuem arquivo `analyze` com todos esses dados
-no XML. O backend ainda não extrai o XML de análise.
+O UFOAnalyzer grava um XML de análise ao lado de cada captura, com o sufixo `A`
+(`M20190712_091431_TLP_5A.XML`). O backend o lê no `bramon:index` e devolve o
+que ele traz:
 
-Verificado em 100+ capturas: `analyzed: false` em 100% dos casos; os 7 campos astronômicos
-`null` em 100% dos casos — apesar de 100% dessas capturas terem o arquivo `analyze` no disco.
+```xml
+<ufoanalyzer_record version="200" clip_name="M20190712_091431_TLP_5" ...>
+  <ua2_objects>
+    <ua2_object fs="61" fe="70" sec="0.150150" av="5.019607" mag="-1.838501" class="J8_PPH" ... />
+  </ua2_objects>
+</ufoanalyzer_record>
+```
 
-**Instrução:** remova da UI qualquer card/painel de "análise astronômica", "magnitude",
-"trajetória" ou "classificação do meteoro" que dependa desses campos. Se o design já tem
-esse bloco, mantenha-o mas mostre um estado vazio honesto ("Análise indisponível
-na versão atual da API") em vez de zeros falsos.
+| Campo | Significado | Exemplo |
+|---|---|---|
+| `class` | classificação da trail | `"J8_PPH"`, `"spo"`, `"__noise"`, `"__slow"`, `"__flash"` |
+| `fs` / `fe` | frame inicial / final | `61` / `70` |
+| `sec` | duração em segundos | `0.15015` |
+| `av` | velocidade angular média | `5.019607` |
+| `mag` | magnitude estimada | `-1.838501` |
+
+Dois flags acompanham o bloco:
+
+- `has_analyze` — a captura **tem** arquivo de análise.
+- `analyzed` — o XML trouxe pelo menos um destes dados. Uma análise que não
+  registra a classificação deixa `class` em `null` mesmo com `analyzed: true`.
+
+Uma captura sem análise (ou com um XML que não tem `ua2_object`) tem todos esses
+campos em `null`/`false`. **Não assuma que a análise existe**: parte das capturas
+da rede nunca foi analisada.
+
+> Os valores só aparecem depois que o índice é reconstruído no servidor
+> (`php artisan bramon:index`). Um índice no formato anterior é ignorado, e as
+> listagens respondem 503 até a reconstrução rodar.
 
 Para distribuição mensal correta, use `GET /stations/{name}/stats`, cujo
 `captures_by_month` **é um objeto `{ "201808": 8, "201809": 114 }`** e funciona.
@@ -550,7 +579,8 @@ A correção está pronta quando **todos** passam:
     `hint` e desabilita filtros/paginação.
 11. `POST /cache/invalidate` **não** é chamado por nenhuma ação da UI.
 12. Nenhum componente renderiza `class`, `fs`, `fe`, `sec`, `av`, `mag` ou `analyzed`
-    assumindo que terá valor.
+    assumindo que terá valor — todos podem ser `null`/`false` em capturas sem
+    arquivo de análise.
 13. Nenhum gráfico usa `/stats.captures_by_month` como se tivesse rótulos de mês.
 14. `npx tsc --noEmit` e `npm run build` passam sem erro. Zero `any` nos types da API.
 
@@ -593,8 +623,9 @@ o passo 6, para restaurar o ambiente.
 
 - **Repositório:** `bramon-api-v2` (Laravel 11, PHP 8.4)
 - **Spec OpenAPI:** atributos PHP em `app/Docs/` (OpenAPI gerado em `/openapi.json`).
-  A spec documenta `files[].type` sem o valor `unknown` e omite os campos
-  `class/fs/fe/sec/av/mag/analyzed` da captura — divergências já contornadas acima.
+  A spec documenta `files[].type` sem o valor `unknown` — divergência contornada
+  acima. Os campos `class/fs/fe/sec/av/mag/analyzed` da captura estão documentados
+  e são lidos do XML de análise (`A.xml`) pelo `bramon:index`.
 - **Comportamento depende de índice em disco** (`php artisan bramon:index`), o que explica
   o 503 e por que listagens são rápidas.
 - **Fonte dos dados:** `operators.json` e `stations.json` + árvore de capturas em

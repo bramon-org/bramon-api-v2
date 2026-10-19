@@ -51,11 +51,6 @@ class OperatorController extends Controller
                 description: 'Parâmetros de query inválidos',
                 content: new OA\JsonContent(ref: '#/components/schemas/Error'),
             ),
-            new OA\Response(
-                response: 503,
-                description: 'Índice de capturas não construído',
-                content: new OA\JsonContent(ref: '#/components/schemas/IndexNotReady'),
-            ),
         ],
     )]
     public function index(OperatorListRequest $request): JsonResponse
@@ -136,11 +131,6 @@ class OperatorController extends Controller
                 response: 404,
                 description: 'Operador não encontrado',
                 content: new OA\JsonContent(ref: '#/components/schemas/Error'),
-            ),
-            new OA\Response(
-                response: 503,
-                description: 'Índice de capturas não construído',
-                content: new OA\JsonContent(ref: '#/components/schemas/IndexNotReady'),
             ),
         ],
     )]

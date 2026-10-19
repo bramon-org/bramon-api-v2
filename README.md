@@ -265,6 +265,38 @@ Como o manifesto passou a guardar também `geolocation`, um índice no formato
 anterior é ignorado (a versão do formato é validada na leitura). Rode
 `bramon:index` após atualizar.
 
+### Análise da captura (arquivo `A.xml`)
+
+O UFOAnalyzer grava, ao lado de cada captura, um XML de análise com o sufixo `A`
+(`M20190712_091431_TLP_5A.XML`). É nele que ficam a **classificação da trail** e
+os parâmetros astronômicos dela:
+
+```xml
+<ufoanalyzer_record version="200" clip_name="M20190712_091431_TLP_5" ...>
+  <ua2_objects>
+    <ua2_object fs="61" fe="70" sec="0.150150" av="5.019607" mag="-1.838501" class="J8_PPH" ... />
+  </ua2_objects>
+</ufoanalyzer_record>
+```
+
+O `bramon:index` lê esse arquivo durante a varredura da árvore e grava o resultado na
+própria captura do índice:
+
+| Endpoint | Campo | Origem |
+|---|---|---|
+| `/captures` | `class` | atributo `class` de `ufoanalyzer_record.ua2_object` (ex.: `J8_PPH`, `spo`, `__noise`) |
+| `/captures` | `fs`, `fe`, `sec`, `av`, `mag` | mesmos atributos do elemento `ua2_object` |
+| `/captures` | `has_analyze` | a captura tem (ou não) arquivo de análise |
+| `/captures` | `analyzed` | o XML de análise trouxe pelo menos um dos dados acima |
+
+Uma captura sem arquivo de análise — ou com um XML que não tem `ua2_object` —
+continua com esses campos em `null`/`false`; o build do índice nunca quebra por
+causa de um arquivo de análise corrompido.
+
+> Como o payload da captura passou a carregar esses campos, um índice no formato
+> anterior é ignorado (a versão do formato é validada na leitura). Rode
+> `bramon:index` após atualizar.
+
 ### stations.json
 ```json
 [

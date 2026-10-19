@@ -27,7 +27,7 @@ use RuntimeException;
 class CaptureIndex
 {
     /** Bumped whenever the on-disk layout changes. */
-    public const VERSION = 5;
+    public const VERSION = 6;
 
     /**
      * The artefacts a complete index consists of.
@@ -61,6 +61,15 @@ class CaptureIndex
     protected const CHUNKS_DIR = 'chunks';
 
     /**
+     * Version of the checkpoint file.
+     *
+     * Bumped whenever the payload stored in the sorted chunks changes, so a
+     * build resumed from a checkpoint written by an older version discards it
+     * instead of publishing records built with the old fields.
+     */
+    public const CHECKPOINT_VERSION = 2;
+
+    /**
      * Bytes read from a metadata file when looking for the record tag.
      *
      * The <ufocapture_record> tag is the second line of every capture, so this
@@ -77,10 +86,13 @@ class CaptureIndex
 
     protected bool $autoBuild;
 
-    public function __construct(string $indexDir, bool $autoBuild = false)
+    protected AnalyzeReader $analyzeReader;
+
+    public function __construct(string $indexDir, bool $autoBuild = false, ?AnalyzeReader $analyzeReader = null)
     {
         $this->indexDir = rtrim($indexDir, '/');
         $this->autoBuild = $autoBuild;
+        $this->analyzeReader = $analyzeReader ?? new AnalyzeReader;
     }
 
     /* ------------------------------------------------------------------ */
@@ -1231,12 +1243,13 @@ class CaptureIndex
 
         $checkpoint = $resume ? $this->readCheckpoint($stagingDir) : null;
         $checkpointValid = $checkpoint !== null
+            && ($checkpoint['version'] ?? null) === self::CHECKPOINT_VERSION
             && ($checkpoint['base_dir'] ?? null) === $baseDir
             && ($checkpoint['since_date'] ?? null) === $sinceDate;
 
         if ($resume && $checkpoint !== null && !$checkpointValid) {
-            // A checkpoint from another source tree or date filter must never
-            // silently skip stations: start over and say so.
+            // A checkpoint from another source tree, date filter or payload
+            // version must never silently skip stations: start over and say so.
             $this->discardStaging($stagingDir);
 
             if (!@mkdir($chunksDir, 0775, true) && !is_dir($chunksDir)) {
@@ -1314,7 +1327,7 @@ class CaptureIndex
                 }
 
                 $this->writeCheckpoint($stagingDir, [
-                    'version' => 1,
+                    'version' => self::CHECKPOINT_VERSION,
                     'base_dir' => $baseDir,
                     'since_date' => $sinceDate,
                     'completed_stations' => array_keys($completed),
@@ -1359,6 +1372,10 @@ class CaptureIndex
 
         $this->attachFile($pending[$key], $file);
 
+        if (($file['type'] ?? null) === 'analyze' && isset($file['path'])) {
+            $this->attachAnalysis($pending[$key], $file['path']);
+        }
+
         if (($file['type'] ?? null) === 'metadata' && isset($file['path'])) {
             $facts = $this->readMetadataFacts($file['path']);
             $pending[$key]['__facts'] = $this->mergeFacts($pending[$key]['__facts'] ?? null, $facts);
@@ -1376,6 +1393,37 @@ class CaptureIndex
                     'time' => (string) $file['time'],
                     'observer' => $observer,
                 ];
+            }
+        }
+    }
+
+    /**
+     * Read the analysis of a capture and store it on the capture record.
+     *
+     * The analysis file is the only place the trail classification and the
+     * astronomical parameters of a capture are recorded, so they are read
+     * while the tree is scanned. The values are stored on the capture itself
+     * (not on the travelling facts) because they are part of the payload the
+     * listing endpoints serve.
+     *
+     * The first analysis that carries a value wins, so a capture with more
+     * than one analysis file keeps the first one read.
+     *
+     * @param  array<string,mixed>  $capture
+     */
+    protected function attachAnalysis(array &$capture, string $path): void
+    {
+        $analysis = $this->analyzeReader->read($path);
+
+        if (!AnalyzeReader::carriesData($analysis)) {
+            return;
+        }
+
+        $capture['analyzed'] = true;
+
+        foreach (AnalyzeReader::FIELDS as $field) {
+            if (($capture[$field] ?? null) === null && $analysis[$field] !== null) {
+                $capture[$field] = $analysis[$field];
             }
         }
     }
@@ -1872,6 +1920,7 @@ class CaptureIndex
             'has_metadata' => false,
             'has_preview' => false,
             'has_thumbnail' => false,
+            'has_analyze' => false,
             'class' => null,
             'fs' => null,
             'fe' => null,
@@ -1944,6 +1993,8 @@ class CaptureIndex
             $capture['has_preview'] = true;
         } elseif ($type === 'thumbnail') {
             $capture['has_thumbnail'] = true;
+        } elseif ($type === 'analyze') {
+            $capture['has_analyze'] = true;
         }
     }
 

@@ -9,19 +9,22 @@ class DataProcessor
     protected ?StationReader $stationReader;
     protected ?CaptureIndex $index;
     protected ?GeocodingService $geocodingService;
+    protected AnalyzeReader $analyzeReader;
 
     public function __construct(
         FileSystemReader $fileReader,
         ?OperatorReader $operatorReader = null,
         ?StationReader $stationReader = null,
         ?CaptureIndex $index = null,
-        ?GeocodingService $geocodingService = null
+        ?GeocodingService $geocodingService = null,
+        ?AnalyzeReader $analyzeReader = null
     ) {
         $this->fileReader = $fileReader;
         $this->operatorReader = $operatorReader;
         $this->stationReader = $stationReader;
         $this->index = $index;
         $this->geocodingService = $geocodingService;
+        $this->analyzeReader = $analyzeReader ?? new AnalyzeReader;
     }
 
     /**
@@ -80,6 +83,8 @@ class DataProcessor
             $hasMetadata = false;
             $hasPreview = false;
             $hasThumbnail = false;
+            $hasAnalyze = false;
+            $analysis = null;
 
             foreach ($fileList as $f) {
                 $fileModels[] = [
@@ -95,8 +100,15 @@ class DataProcessor
                     'metadata' => $hasMetadata = true,
                     'preview' => $hasPreview = true,
                     'thumbnail' => $hasThumbnail = true,
+                    'analyze' => $hasAnalyze = true,
                     default => null,
                 };
+
+                // The analysis of a capture is only recorded in its analysis
+                // file, so it is read here and kept on the capture.
+                if ($f['type'] === 'analyze' && $analysis === null && isset($f['path'])) {
+                    $analysis = $this->analyzeReader->read($f['path']);
+                }
             }
 
             $captures[] = [
@@ -110,13 +122,14 @@ class DataProcessor
                 'has_metadata' => $hasMetadata,
                 'has_preview' => $hasPreview,
                 'has_thumbnail' => $hasThumbnail,
-                'class' => null,
-                'fs' => null,
-                'fe' => null,
-                'sec' => null,
-                'av' => null,
-                'mag' => null,
-                'analyzed' => false,
+                'has_analyze' => $hasAnalyze,
+                'class' => $analysis['class'] ?? null,
+                'fs' => $analysis['fs'] ?? null,
+                'fe' => $analysis['fe'] ?? null,
+                'sec' => $analysis['sec'] ?? null,
+                'av' => $analysis['av'] ?? null,
+                'mag' => $analysis['mag'] ?? null,
+                'analyzed' => AnalyzeReader::carriesData($analysis),
             ];
         }
 

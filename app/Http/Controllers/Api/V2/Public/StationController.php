@@ -55,11 +55,6 @@ class StationController extends Controller
                 description: 'Parâmetros de query inválidos',
                 content: new OA\JsonContent(ref: '#/components/schemas/Error'),
             ),
-            new OA\Response(
-                response: 503,
-                description: 'Índice de capturas não construído',
-                content: new OA\JsonContent(ref: '#/components/schemas/IndexNotReady'),
-            ),
         ],
     )]
     public function index(StationListRequest $request): JsonResponse
@@ -178,11 +173,6 @@ class StationController extends Controller
                 response: 404,
                 description: 'Estação não encontrada',
                 content: new OA\JsonContent(ref: '#/components/schemas/Error'),
-            ),
-            new OA\Response(
-                response: 503,
-                description: 'Índice de capturas não construído',
-                content: new OA\JsonContent(ref: '#/components/schemas/IndexNotReady'),
             ),
         ],
     )]

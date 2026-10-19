@@ -21,6 +21,7 @@ class CaptureResource extends JsonResource
             'has_metadata' => $this['has_metadata'],
             'has_preview' => $this['has_preview'],
             'has_thumbnail' => $this['has_thumbnail'],
+            'has_analyze' => $this['has_analyze'] ?? false,
             'class' => $this['class'],
             'fs' => $this['fs'],
             'fe' => $this['fe'],

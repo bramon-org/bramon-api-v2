@@ -160,6 +160,54 @@ class CaptureApiTest extends TestCase
             ->assertJsonPath('data.0.observer', 'Ana Silva');
     }
 
+    public function testCapturesListExposesTheAnalysisOfTheCapture(): void
+    {
+        $dir = $this->baseDir . '/TLP1/20250802';
+        @mkdir($dir, 0775, true);
+        file_put_contents("{$dir}/M20250802_034905_TLP1_1A.xml", <<<'XML'
+        <?xml version="1.0" encoding="UTF-8" ?>
+        <ufoanalyzer_record version="200" clip_name="M20250802_034905_TLP1_1" lid="TLP" sid="1">
+        	<ua2_objects>
+        <ua2_object fs="61" fe="70" sec="0.150150" av="5.019607" mag="-1.838501" class="J8_PPH">
+        	</ua2_object>
+        	</ua2_objects>
+        </ufoanalyzer_record>
+        XML);
+        $this->buildIndex();
+
+        $response = $this->getJson('/api/v2/public/captures?station=TLP1&per_page=10');
+
+        $response->assertStatus(200);
+
+        $capture = collect($response->json('data'))
+            ->firstWhere('capture_date', '20250802');
+
+        $this->assertNotNull($capture);
+        $this->assertTrue($capture['has_analyze']);
+        $this->assertTrue($capture['analyzed']);
+        $this->assertSame('J8_PPH', $capture['class']);
+        $this->assertEquals(61.0, $capture['fs']);
+        $this->assertEquals(70.0, $capture['fe']);
+        $this->assertEquals(0.150150, $capture['sec']);
+        $this->assertEquals(5.019607, $capture['av']);
+        $this->assertEquals(-1.838501, $capture['mag']);
+        $this->assertContains('analyze', array_column($capture['files'], 'type'));
+    }
+
+    public function testCapturesWithoutAnalysisKeepTheAnalysisFieldsEmpty(): void
+    {
+        $response = $this->getJson('/api/v2/public/captures?station=TLP2');
+
+        $response->assertStatus(200);
+
+        $capture = $response->json('data.0');
+
+        $this->assertFalse($capture['has_analyze']);
+        $this->assertFalse($capture['analyzed']);
+        $this->assertNull($capture['class']);
+        $this->assertNull($capture['fs']);
+    }
+
     public function testCapturesListIsNewestFirst(): void
     {
         $response = $this->getJson('/api/v2/public/captures?per_page=3');

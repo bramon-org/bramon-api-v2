@@ -15,14 +15,13 @@ class StationsGenerate extends Command
 {
     protected $signature = 'bramon:stations-generate 
                             {--output= : Output file path (default: stations.json in base dir)}
-                            {--base-dir= : Base directory for captures (default: config value)}
                             {--force : Overwrite existing file without confirmation}';
 
     protected $description = 'Generate stations.json directly from the filesystem';
 
     public function handle(DataProcessor $processor): int
     {
-        $baseDir = $this->option('base-dir') ?? config('bramon.base_dir');
+        $baseDir = config('bramon.base_dir');
         $outputFile = $this->option('output') ?? config('bramon.stations_file', $baseDir . '/stations.json');
         $force = $this->option('force');
 

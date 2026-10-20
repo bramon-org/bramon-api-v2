@@ -67,7 +67,7 @@ class CaptureIndex
      * build resumed from a checkpoint written by an older version discards it
      * instead of publishing records built with the old fields.
      */
-    public const CHECKPOINT_VERSION = 2;
+    public const CHECKPOINT_VERSION = 3;
 
     /**
      * Bytes read from a metadata file when looking for the record tag.
@@ -87,6 +87,19 @@ class CaptureIndex
     protected bool $autoBuild;
 
     protected AnalyzeReader $analyzeReader;
+
+    /**
+     * Counters filled in while an accumulative build merges the fresh scan
+     * with the index that was already published.
+     *
+     * @var array{carried_over:int,pruned_files:int,pruned_captures:int,stale:int}
+     */
+    protected array $mergeStats = [
+        'carried_over' => 0,
+        'pruned_files' => 0,
+        'pruned_captures' => 0,
+        'stale' => 0,
+    ];
 
     public function __construct(string $indexDir, bool $autoBuild = false, ?AnalyzeReader $analyzeReader = null)
     {
@@ -996,8 +1009,15 @@ class CaptureIndex
      * captures on/after that date, by filename date, for a fast partial index.
      * The applied filter is recorded in the manifest under `filter`.
      *
+     * `['accumulative' => true]` merges the scan into the index that is
+     * already published instead of replacing it: the captures the scan does
+     * not cover are carried over, and the ones it covers are updated by the
+     * fresh scan. `['prune' => false]` keeps the carried-over captures whose
+     * files are gone from disk; by default they are reconciled with the disk
+     * and dropped when nothing is left of them.
+     *
      * @param  callable|null  $progress  Receives (int $filesSeen, string $stage).
-     * @param  array{resume?:bool,fresh?:bool,since_days?:int,since?:string,stations?:array<int,string>|string}  $options
+     * @param  array{resume?:bool,fresh?:bool,since_days?:int,since?:string,stations?:array<int,string>|string,accumulative?:bool,prune?:bool}  $options
      * @return array<string,mixed> Summary written to the manifest.
      */
     public function rebuild(FileSystemReader $reader, ?callable $progress = null, int $chunkSize = 20000, ?string $tempDir = null, array $options = []): array
@@ -1012,6 +1032,8 @@ class CaptureIndex
 
         $resume = (bool) ($options['resume'] ?? false);
         $fresh = (bool) ($options['fresh'] ?? false);
+        $accumulative = (bool) ($options['accumulative'] ?? false);
+        $prune = (bool) ($options['prune'] ?? true);
         $sinceInfo = self::normalizeSinceDate($options);
 
         $stagingDir = $this->stagingDir($resume);
@@ -1111,6 +1133,8 @@ class CaptureIndex
     {
         $sinceDate = $sinceInfo['since_date'];
         $onlyStations = self::normalizeStationsOption($options['stations'] ?? null);
+        $accumulative = (bool) ($options['accumulative'] ?? false);
+        $prune = (bool) ($options['prune'] ?? true);
 
         // A resumable (or station-scoped) build scans station by station with a
         // checkpoint after each one; the default path keeps the historical
@@ -1126,11 +1150,10 @@ class CaptureIndex
         /** @var array<string,array<int,array{time:string,observer:string}>> $metadataBySequence */
         $metadataBySequence = [];
         $filesSeen = 0;
-        $totalFiles = 0;
         $resumed = false;
 
         if ($useStationScan) {
-            [$sorter, $filesSeen, $totalFiles, $metadataBySequence, $resumed] = $this->scanByStation(
+            [$sorter, $filesSeen, , $metadataBySequence, $resumed] = $this->scanByStation(
                 $reader,
                 $progress,
                 $chunkSize,
@@ -1138,7 +1161,8 @@ class CaptureIndex
                 $tempDir,
                 $resume,
                 $sinceDate,
-                $onlyStations
+                $onlyStations,
+                $accumulative
             );
         } else {
             // Pass 1: stream files, coalescing them into captures. Spill sorted
@@ -1160,7 +1184,6 @@ class CaptureIndex
                 }
 
                 $this->ingestFile($file, $pending, $sorter, $metadataBySequence, $chunkSize);
-                $totalFiles++;
             }
 
             if ($pending !== []) {
@@ -1173,7 +1196,18 @@ class CaptureIndex
             $progress($filesSeen, 'sorting');
         }
 
-        return $this->writeIndex($sorter, $metadataBySequence, $stagingDir, $progress, $filesSeen, $totalFiles, $sinceInfo, $resumed);
+        return $this->writeIndex(
+            $sorter,
+            $metadataBySequence,
+            $stagingDir,
+            $progress,
+            $filesSeen,
+            $sinceInfo,
+            $resumed,
+            $accumulative,
+            $prune,
+            $reader->getBaseDir()
+        );
     }
 
     /**
@@ -1230,7 +1264,8 @@ class CaptureIndex
         ?string $tempDir,
         bool $resume,
         ?string $sinceDate,
-        ?array $onlyStations
+        ?array $onlyStations,
+        bool $accumulative = false
     ): array {
         $baseDir = $reader->getBaseDir();
         $stations = $onlyStations ?? $reader->stationNames();
@@ -1245,7 +1280,11 @@ class CaptureIndex
         $checkpointValid = $checkpoint !== null
             && ($checkpoint['version'] ?? null) === self::CHECKPOINT_VERSION
             && ($checkpoint['base_dir'] ?? null) === $baseDir
-            && ($checkpoint['since_date'] ?? null) === $sinceDate;
+            && ($checkpoint['since_date'] ?? null) === $sinceDate
+            // An accumulative build merges with the index that was published
+            // when it started, so its chunks cannot be resumed by a build that
+            // replaces the index instead.
+            && (bool) ($checkpoint['accumulative'] ?? false) === $accumulative;
 
         if ($resume && $checkpoint !== null && !$checkpointValid) {
             // A checkpoint from another source tree, date filter or payload
@@ -1330,6 +1369,7 @@ class CaptureIndex
                     'version' => self::CHECKPOINT_VERSION,
                     'base_dir' => $baseDir,
                     'since_date' => $sinceDate,
+                    'accumulative' => $accumulative,
                     'completed_stations' => array_keys($completed),
                     'files_seen' => $filesSeen,
                     'total_files' => $totalFiles,
@@ -1461,6 +1501,12 @@ class CaptureIndex
     /**
      * Write the sorted stream, offset table and station blocks into staging.
      *
+     * When the build is accumulative, the stream written here is the merge of
+     * the fresh scan and the captures already stored in the live index: the
+     * scan wins for the captures it covers, the ones it does not cover are
+     * carried over, and the carried-over ones are reconciled with the disk so
+     * the files that were deleted leave the index.
+     *
      * @param  array<string,array<int,array{time:string,observer:string}>>  $metadataBySequence
      * @param  array{since_date:?string,since:?string,since_days:?int}  $sinceInfo
      * @return array<string,mixed> Summary destined for the manifest.
@@ -1471,10 +1517,45 @@ class CaptureIndex
         string $stagingDir,
         ?callable $progress,
         int $filesSeen,
-        int $totalFiles,
         array $sinceInfo,
-        bool $resumed
+        bool $resumed,
+        bool $accumulative = false,
+        bool $prune = true,
+        ?string $baseDir = null
     ): array {
+
+        // The aggregates of the index that is already published are the
+        // fallback for the stations the scan does not touch: without them an
+        // accumulative build would drop the operator and the position of every
+        // station outside the scan window.
+        $storedAggregates = [];
+        $storedBaseDir = null;
+        $mergeStored = false;
+
+        if ($accumulative && $this->exists()) {
+            $mergeStored = true;
+
+            $storedManifest = $this->manifest() ?? [];
+            $storedAggregates = $storedManifest['station_aggregates'] ?? [];
+            $storedBaseDir = $storedManifest['base_dir'] ?? null;
+        }
+
+        // Pruning stats the files the stored captures point to, so it only
+        // makes sense while the tree is the one the index was built from.
+        $canPrune = $prune && ($storedBaseDir === null || $storedBaseDir === $baseDir);
+
+        if ($prune && !$canPrune) {
+            \Log::warning(
+                'Index base directory changed; the stored captures are carried over without pruning.'
+            );
+        }
+
+        $this->mergeStats = [
+            'carried_over' => 0,
+            'pruned_files' => 0,
+            'pruned_captures' => 0,
+            'stale' => 0,
+        ];
 
         // Pass 2: write the sorted stream, offset table and station blocks.
         $capturesHandle = @fopen($this->pathIn($stagingDir, 'captures.ndjson'), 'wb');
@@ -1489,8 +1570,14 @@ class CaptureIndex
         $earliest = null;
         $latest = null;
         $totalCaptures = 0;
+        $totalFiles = 0;
         $offset = 0;
         $lineIndex = 0;
+
+        // Stations whose operator/geolocation came from the scan, so the facts
+        // of the fresh scan take precedence over the stored ones.
+        $operatorFromScan = [];
+        $geolocationFromScan = [];
 
         // Station line indices, packed as 8-byte big-endian integers per station
         // instead of one PHP array entry per capture, so a multi-million
@@ -1498,16 +1585,26 @@ class CaptureIndex
         /** @var array<string,string> $byStationRecords */
         $byStationRecords = [];
 
-        foreach ($sorter->sorted() as [$sortKey, $capture]) {
-            $associationKey = $this->metadataSequenceKey(
-                (string) $capture['station'],
-                (string) $capture['capture_date'],
-                (string) ($capture['_metadata_sequence'] ?? '')
-            );
-            $capture['observer'] = $this->closestObserver(
-                $metadataBySequence[$associationKey] ?? [],
-                (string) $capture['capture_time']
-            );
+        $stream = $this->captureStream(
+            $sorter,
+            $mergeStored,
+            $canPrune,
+            $baseDir
+        );
+
+        foreach ($stream as [$sortKey, $capture, $isFresh]) {
+            if ($isFresh) {
+                $associationKey = $this->metadataSequenceKey(
+                    (string) $capture['station'],
+                    (string) $capture['capture_date'],
+                    (string) ($capture['_metadata_sequence'] ?? '')
+                );
+                $capture['observer'] = $this->closestObserver(
+                    $metadataBySequence[$associationKey] ?? [],
+                    (string) $capture['capture_time']
+                );
+            }
+
             unset($capture['_metadata_sequence']);
 
             // Operator/geolocation facts travelled with the capture through the
@@ -1543,13 +1640,17 @@ class CaptureIndex
 
             $byMonth[$monthKey] = ($byMonth[$monthKey] ?? 0) + 1;
 
+            $totalFiles += (int) ($capture['file_count'] ?? 0);
+
             if (!isset($aggregates[$station])) {
                 $aggregates[$station] = [
                     'count' => 0,
                     'first' => $capturedAt,
                     'last' => $capturedAt,
-                    'operator' => null,
-                    'geolocation' => null,
+                    // The stored aggregate is the fallback: the scan may not
+                    // have covered this station at all.
+                    'operator' => $storedAggregates[$station]['operator'] ?? null,
+                    'geolocation' => $storedAggregates[$station]['geolocation'] ?? null,
                 ];
             }
 
@@ -1573,14 +1674,17 @@ class CaptureIndex
 
             // Pass 2 walks the captures newest first, so the first capture that
             // carries an operator or a usable fix is the most recent one that
-            // does. Later captures only fill what is still missing.
+            // does. Later captures only fill what is still missing. A fact read
+            // by the scan replaces the stored one, which is only a fallback.
             if (is_array($facts)) {
-                if ($aggregates[$station]['operator'] === null && ($facts['operator'] ?? null) !== null) {
+                if (($facts['operator'] ?? null) !== null && !isset($operatorFromScan[$station])) {
                     $aggregates[$station]['operator'] = $facts['operator'];
+                    $operatorFromScan[$station] = true;
                 }
 
-                if ($aggregates[$station]['geolocation'] === null && ($facts['geolocation'] ?? null) !== null) {
+                if (($facts['geolocation'] ?? null) !== null && !isset($geolocationFromScan[$station])) {
                     $aggregates[$station]['geolocation'] = $facts['geolocation'];
+                    $geolocationFromScan[$station] = true;
                 }
             }
 
@@ -1668,7 +1772,22 @@ class CaptureIndex
             // True when this build adopted sorted chunks from a checkpoint left
             // by an interrupted run instead of scanning everything itself.
             'resumed' => $resumed,
+            // True when this build merged the scan into the index that was
+            // already published instead of replacing it.
+            'accumulative' => $accumulative,
+            // Tree this index was built from, so a later build knows whether
+            // the stored captures still point at the same files.
+            'base_dir' => $baseDir,
         ];
+
+        if ($accumulative) {
+            // How the merged index was assembled, so an operator can tell what
+            // the totals cover without reading the build log.
+            $manifest['carried_over'] = $this->mergeStats['carried_over'];
+            $manifest['pruned_files'] = $this->mergeStats['pruned_files'];
+            $manifest['pruned_captures'] = $this->mergeStats['pruned_captures'];
+            $manifest['stale'] = $this->mergeStats['stale'];
+        }
 
         // Write to a temporary file, flush it to disk, then rename it into
         // place. rename() is atomic within a directory, so the final manifest
@@ -1715,6 +1834,384 @@ class CaptureIndex
 
         return $manifest;
 
+    }
+
+    /* ------------------------------------------------------------------ */
+    /* Accumulative merge                                                  */
+    /* ------------------------------------------------------------------ */
+
+    /**
+     * The captures to write, in order from the newest to the oldest.
+     *
+     * Without a merge this is the sorted stream of the scan. With one it is
+     * the scan merged with the captures already stored in the live index.
+     *
+     * @param  bool  $mergeStored  Merge with the captures of the live index.
+     * @param  bool  $prune  Drop the stored captures whose files are gone.
+     * @param  string|null  $baseDir  Tree the stored captures point to.
+     * @return Generator<int,array{0:string,1:array<string,mixed>,2:bool}>
+     *     Sort key, capture, whether it comes from the scan.
+     */
+    protected function captureStream(
+        ExternalSort $sorter,
+        bool $mergeStored,
+        bool $prune,
+        ?string $baseDir
+    ): Generator {
+        $fresh = $sorter->sorted();
+
+        if (!$mergeStored) {
+            foreach ($fresh as [$key, $capture]) {
+                yield [$key, $capture, true];
+            }
+
+            return;
+        }
+
+        yield from $this->mergeStreams(
+            $this->groupByTimestamp($fresh),
+            $this->groupByTimestamp($this->storedCaptures()),
+            $prune ? $baseDir : null
+        );
+    }
+
+    /**
+     * Read the captures stored in the live index.
+     *
+     * The live index is the one that was published last: it is still intact
+     * while the new one is staged, and it is replaced by a rename once the
+     * build is complete.
+     *
+     * @return Generator<int,array{0:string,1:array<string,mixed>}>
+     */
+    protected function storedCaptures(): Generator
+    {
+        $handle = @fopen($this->capturesPath(), 'rb');
+
+        if ($handle === false) {
+            return;
+        }
+
+        try {
+            while (($line = fgets($handle)) !== false) {
+                $decoded = json_decode($line, true);
+
+                if (!is_array($decoded) || !isset($decoded['captured_at'])) {
+                    continue;
+                }
+
+                yield [(string) $decoded['captured_at'], $decoded];
+            }
+        } finally {
+            fclose($handle);
+        }
+    }
+
+    /**
+     * Group a stream of captures into the runs that share a timestamp.
+     *
+     * The merge needs whole groups because the two streams it combines can
+     * order the captures of the same second differently, so a capture that
+     * exists on both sides can only be spotted by comparing the ids inside
+     * the group.
+     *
+     * @param  iterable<int,array{0:string,1:array<string,mixed>}>  $stream
+     * @return Generator<int,array{0:string,1:array<int,array<string,mixed>>}>
+     */
+    protected function groupByTimestamp(iterable $stream): Generator
+    {
+        $timestamp = null;
+        $group = [];
+
+        foreach ($stream as [$key, $capture]) {
+            $current = (string) ($capture['captured_at'] ?? $key);
+
+            if ($timestamp !== null && $current !== $timestamp) {
+                yield [$timestamp, $group];
+
+                $group = [];
+            }
+
+            $timestamp = $current;
+            $group[] = $capture;
+        }
+
+        if ($group !== []) {
+            yield [$timestamp, $group];
+        }
+    }
+
+    /**
+     * Merge the groups of the scan with the groups of the stored index.
+     *
+     * Both sides are ordered from the newest capture to the oldest, so the
+     * merge is a plain walk. When both sides hold the same timestamp, the scan
+     * wins: the stored copy of a capture the scan already knows is dropped, so
+     * a capture that gained an analysis file is updated instead of being
+     * indexed twice.
+     *
+     * @param  Generator<int,array{0:string,1:array<int,array<string,mixed>>}>  $freshGroups
+     * @param  Generator<int,array{0:string,1:array<int,array<string,mixed>>}>  $storedGroups
+     * @param  string|null  $baseDir  Tree the stored captures are reconciled with.
+     * @return Generator<int,array{0:string,1:array<string,mixed>,2:bool}>
+     */
+    protected function mergeStreams(Generator $freshGroups, Generator $storedGroups, ?string $baseDir = null): Generator
+    {
+        $freshGroups->rewind();
+        $storedGroups->rewind();
+
+        $fresh = $freshGroups->valid() ? $freshGroups->current() : null;
+        $stored = $storedGroups->valid() ? $storedGroups->current() : null;
+
+        while ($fresh !== null || $stored !== null) {
+            if ($stored === null) {
+                foreach ($fresh[1] as $capture) {
+                    yield [(string) $capture['captured_at'], $capture, true];
+                }
+
+                $fresh = $this->nextGroup($freshGroups);
+
+                continue;
+            }
+
+            if ($fresh === null) {
+                foreach ($this->carryOver($stored[1], $baseDir) as $capture) {
+                    yield [(string) $capture['captured_at'], $capture, false];
+                }
+
+                $stored = $this->nextGroup($storedGroups);
+
+                continue;
+            }
+
+            $comparison = strcmp((string) $fresh[0], (string) $stored[0]);
+
+            if ($comparison > 0) {
+                // The scanned group is newer, so nothing stored can match it.
+                foreach ($fresh[1] as $capture) {
+                    yield [(string) $capture['captured_at'], $capture, true];
+                }
+
+                $fresh = $this->nextGroup($freshGroups);
+
+                continue;
+            }
+
+            if ($comparison < 0) {
+                // The stored group is newer, so the scan cannot cover it.
+                foreach ($this->carryOver($stored[1], $baseDir) as $capture) {
+                    yield [(string) $capture['captured_at'], $capture, false];
+                }
+
+                $stored = $this->nextGroup($storedGroups);
+
+                continue;
+            }
+
+            // Same timestamp: the scan wins for the captures it knows.
+            $freshIds = [];
+
+            foreach ($fresh[1] as $capture) {
+                $id = (string) ($capture['id'] ?? '');
+
+                if ($id !== '') {
+                    $freshIds[$id] = true;
+                }
+
+                yield [(string) $capture['captured_at'], $capture, true];
+            }
+
+            $kept = [];
+
+            foreach ($stored[1] as $capture) {
+                $id = (string) ($capture['id'] ?? '');
+
+                if ($id !== '' && isset($freshIds[$id])) {
+                    // The scan already indexed this capture: not carried over.
+                    continue;
+                }
+
+                $kept[] = $capture;
+            }
+
+            foreach ($this->carryOver($kept, $baseDir) as $capture) {
+                yield [(string) $capture['captured_at'], $capture, false];
+            }
+
+            $fresh = $this->nextGroup($freshGroups);
+            $stored = $this->nextGroup($storedGroups);
+        }
+    }
+
+    /**
+     * Prepare the stored captures of a group to be carried over.
+     *
+     * Each capture is reconciled with the disk: the files that were deleted
+     * are dropped from it, and a capture that lost every file leaves the
+     * index. A capture the scan already covers is not carried over at all, so
+     * the fresh version is the one that counts.
+     *
+     * @param  array<int,array<string,mixed>>  $captures
+     * @return Generator<int,array<string,mixed>>
+     */
+    protected function carryOver(array $captures, ?string $baseDir): Generator
+    {
+        foreach ($captures as $capture) {
+            if ($baseDir === null || $baseDir === '') {
+                $this->mergeStats['carried_over']++;
+
+                yield $capture;
+
+                continue;
+            }
+
+            $pruned = $this->pruneCapture($capture, $baseDir);
+
+            if ($pruned === null) {
+                continue;
+            }
+
+            $this->mergeStats['carried_over']++;
+
+            yield $pruned;
+        }
+    }
+
+    /**
+     * Advance a group stream to its next group.
+     *
+     * @param  Generator<int,array{0:string,1:array<int,array<string,mixed>>}>  $groups
+     * @return array{0:string,1:array<int,array<string,mixed>>}|null
+     */
+    protected function nextGroup(Generator $groups): ?array
+    {
+        if (!$groups->valid()) {
+            return null;
+        }
+
+        $groups->next();
+
+        return $groups->valid() ? $groups->current() : null;
+    }
+
+    /**
+     * Reconcile a stored capture with the files that are still on disk.
+     *
+     * The files that were deleted are dropped from the capture, the flags are
+     * recomputed from what is left, and the data that came from a missing
+     * file (the analysis, the observer) is cleared. A capture whose files were
+     * all deleted returns null, so it leaves the index.
+     *
+     * A file that changed but is still there is reported as stale instead of
+     * being re-read: re-reading it is the job of the scan, and only a scan
+     * that covers the capture can refresh it.
+     *
+     * @param  array<string,mixed>  $capture
+     * @return array<string,mixed>|null
+     */
+    protected function pruneCapture(array $capture, string $baseDir): ?array
+    {
+        $files = [];
+        $removed = 0;
+        $changed = false;
+
+        foreach ((array) ($capture['files'] ?? []) as $file) {
+            $url = (string) ($file['url'] ?? '');
+
+            if ($url === '') {
+                continue;
+            }
+
+            $path = $baseDir . '/' . ltrim($url, '/');
+            $stat = @stat($path);
+
+            if ($stat === false) {
+                $removed++;
+
+                continue;
+            }
+
+            if ($this->fileChanged($file, $stat)) {
+                $changed = true;
+            }
+
+            $files[] = $file;
+        }
+
+        if ($changed) {
+            $this->mergeStats['stale']++;
+        }
+
+        if ($removed === 0) {
+            return $capture;
+        }
+
+        $this->mergeStats['pruned_files'] += $removed;
+
+        $capture['files'] = $files;
+        $capture['file_count'] = count($files);
+
+        $types = [];
+
+        foreach ($files as $file) {
+            $types[(string) ($file['type'] ?? '')] = true;
+        }
+
+        $capture['has_metadata'] = isset($types['metadata']);
+        $capture['has_preview'] = isset($types['preview']);
+        $capture['has_thumbnail'] = isset($types['thumbnail']);
+        $capture['has_analyze'] = isset($types['analyze']);
+
+        // The analysis and the observer came from files that are gone, so the
+        // capture cannot keep claiming them.
+        if (!$capture['has_analyze']) {
+            $capture['analyzed'] = false;
+
+            foreach (AnalyzeReader::FIELDS as $field) {
+                $capture[$field] = null;
+            }
+        }
+
+        if (!$capture['has_metadata']) {
+            $capture['observer'] = null;
+        }
+
+        if ($files === []) {
+            $this->mergeStats['pruned_captures']++;
+
+            return null;
+        }
+
+        return $capture;
+    }
+
+    /**
+     * Whether a stored file no longer matches the one on disk.
+     *
+     * The stored size and modification date are compared with the current
+     * ones. The stored values are left untouched when they differ, so the
+     * capture stays reported as stale until a scan re-reads it.
+     *
+     * @param  array<string,mixed>  $file
+     * @param  array<string,int>  $stat
+     */
+    protected function fileChanged(array $file, array $stat): bool
+    {
+        $size = $file['size'] ?? null;
+
+        if (is_numeric($size) && (int) $size !== (int) ($stat['size'] ?? 0)) {
+            return true;
+        }
+
+        $modifiedAt = (string) ($file['modified_at'] ?? '');
+
+        if ($modifiedAt === '') {
+            return false;
+        }
+
+        $stored = strtotime($modifiedAt);
+
+        return $stored !== false && $stored !== (int) ($stat['mtime'] ?? 0);
     }
 
     /**

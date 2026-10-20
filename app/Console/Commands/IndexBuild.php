@@ -18,7 +18,6 @@ use Throwable;
 class IndexBuild extends Command
 {
     protected $signature = 'bramon:index
-                            {--base-dir= : Base directory for captures (default: config value)}
                             {--chunk= : Records buffered before spilling a sorted chunk}
                             {--index-dir= : Where to write the index (default: config value)}
                             {--force : Rebuild even if the index already exists}
@@ -26,7 +25,9 @@ class IndexBuild extends Command
                             {--resume : Resume an interrupted build from its checkpoint instead of starting over}
                             {--fresh : Discard any checkpoint and scan from scratch (use with --resume)}
                             {--since-days= : Only index captures from the last X days (by filename date)}
-                            {--since= : Only index captures on/after this date (YYYY-MM-DD or YYYYMMDD)}';
+                            {--since= : Only index captures on/after this date (YYYY-MM-DD or YYYYMMDD)}
+                            {--acumulative : Merge the scan into the existing index instead of replacing it}
+                            {--no-prune : With --acumulative, keep the stored captures whose files are gone from disk}';
 
     protected $description = 'Build the on-disk capture index used by the listing endpoints';
 
@@ -38,14 +39,25 @@ class IndexBuild extends Command
             $index = new CaptureIndex($indexDir);
         }
 
+        $accumulative = (bool) $this->option('acumulative');
+        $prune = ! (bool) $this->option('no-prune');
+
         if ($this->option('flush')) {
+            if ($accumulative) {
+                $this->error('--acumulative cannot be combined with --flush: there is nothing to merge into.');
+
+                return Command::FAILURE;
+            }
+
             $index->flush();
             $this->info('Index removed.');
 
             return Command::SUCCESS;
         }
 
-        $baseDir = $this->option('base-dir') ?: config('bramon.base_dir');
+        // The captures tree always comes from the configuration: the same path
+        // the API reads from, so the index and the listing never disagree.
+        $baseDir = config('bramon.base_dir');
 
         if (!is_dir($baseDir)) {
             $this->error("Base directory does not exist: {$baseDir}");
@@ -53,7 +65,7 @@ class IndexBuild extends Command
             return Command::FAILURE;
         }
 
-        if ($index->exists() && !$this->option('force') && !$this->option('resume')) {
+        if ($index->exists() && !$this->option('force') && !$this->option('resume') && !$accumulative) {
             $this->warn('Index already exists. Use --force to rebuild or --flush to remove it.');
             $this->line("  Captures:  " . number_format($index->totalCaptures()));
             $this->line("  Generated: " . ($index->generatedAt() ?? 'unknown'));
@@ -88,10 +100,28 @@ class IndexBuild extends Command
             $this->info('Mode:            resumable (checkpoints per station)' . ($fresh ? ', fresh scan' : ''));
         }
 
+        if ($accumulative) {
+            $this->info(
+                'Mode:            accumulative (merging with the existing index'
+                . ($prune ? ', pruning the files that are gone' : '')
+                . ')'
+            );
+
+            if (!$index->exists()) {
+                $this->warn('No existing index found: building a fresh one.');
+            }
+        }
+
         if ($sinceDays !== null && $sinceDays !== '') {
-            $this->info("Date filter:     last {$sinceDays} day(s) only");
+            $this->info(
+                "Date filter:     last {$sinceDays} day(s) only"
+                . ($accumulative ? ' (scan window; the rest is carried over)' : '')
+            );
         } elseif ($since !== null && $since !== '') {
-            $this->info("Date filter:     since {$since}");
+            $this->info(
+                "Date filter:     since {$since}"
+                . ($accumulative ? ' (scan window; the rest is carried over)' : '')
+            );
         }
 
         $this->newLine();
@@ -123,6 +153,8 @@ class IndexBuild extends Command
                     'fresh' => $fresh,
                     'since_days' => $sinceDays !== null && $sinceDays !== '' ? (int) $sinceDays : null,
                     'since' => $since,
+                    'accumulative' => $accumulative,
+                    'prune' => $prune,
                 ]
             );
 
@@ -160,6 +192,30 @@ class IndexBuild extends Command
             $rows[] = ['Resumed', 'yes (from checkpoint)'];
         }
 
+        if (!empty($manifest['accumulative'])) {
+            $carriedOver = (int) ($manifest['carried_over'] ?? 0);
+            $scanned = (int) ($manifest['total_captures'] ?? 0) - $carriedOver;
+
+            $rows[] = ['Mode', 'accumulative (merged with the previous index)'];
+            $rows[] = ['Scanned', number_format($scanned) . ' captures updated or added'];
+            $rows[] = ['Carried over', number_format($carriedOver) . ' captures kept'];
+
+            if ((int) ($manifest['pruned_files'] ?? 0) > 0) {
+                $rows[] = ['Removed files', number_format((int) $manifest['pruned_files'])];
+            }
+
+            if ((int) ($manifest['pruned_captures'] ?? 0) > 0) {
+                $rows[] = ['Removed captures', number_format((int) $manifest['pruned_captures'])];
+            }
+
+            if ((int) ($manifest['stale'] ?? 0) > 0) {
+                $rows[] = [
+                    'Changed outside the window',
+                    number_format((int) $manifest['stale']) . ' (reindex with a wider --since to refresh them)',
+                ];
+            }
+        }
+
         $rows[] = ['Disk usage', $this->humanBytes($index->diskUsage())];
         $rows[] = ['Elapsed', number_format($elapsed, 2) . 's'];
         $rows[] = ['Peak memory', $this->formatBytes(memory_get_peak_usage(true))];
@@ -168,7 +224,6 @@ class IndexBuild extends Command
 
         // Generate stations.json after building the index
         $this->call('bramon:stations-generate', [
-            '--base-dir' => $baseDir,
             '--force' => true,
         ]);
 

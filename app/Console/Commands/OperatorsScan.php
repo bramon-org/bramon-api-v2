@@ -20,7 +20,6 @@ class OperatorsScan extends Command
 {
     protected $signature = 'bramon:operators-scan 
                             {--output= : Output file path (default: operators.json in base dir)}
-                            {--base-dir= : Base directory for captures (default: config value)}
                             {--index-dir= : Index directory (default: config value)}
                             {--pretty : Pretty print JSON output}
                             {--force : Overwrite existing file without confirmation}';
@@ -35,7 +34,7 @@ class OperatorsScan extends Command
 
     public function handle(): int
     {
-        $baseDir = $this->option('base-dir') ?? config('bramon.base_dir');
+        $baseDir = config('bramon.base_dir');
         $indexDir = $this->option('index-dir') ?? config('bramon.index_dir');
         $outputFile = $this->option('output') ?? $baseDir . '/operators.json';
         $pretty = $this->option('pretty');

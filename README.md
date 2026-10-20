@@ -88,6 +88,61 @@ BRAMON_BASE_DIR/
 | T | thumbnail (JPG/BMP) |
 | A | analyze (XML) |
 
+### Índice de capturas (`bramon:index`)
+
+As rotas de listagem (`/captures`, `/stations`, `/operators`, `/stats`) são servidas a
+partir de um índice pré-construído em disco, para que o custo de memória de cada
+requisição não dependa da quantidade de arquivos na árvore.
+
+```bash
+php artisan bramon:index --force
+```
+
+Por padrão o comando **substitui** o índice: ele varre a árvore inteira e publica
+um índice novo. Com `--acumulative` o comando **mescla** a varredura com o índice
+já publicado:
+
+```bash
+php artisan bramon:index --acumulative --since-days=30
+```
+
+| Opção | Efeito |
+|-------|--------|
+| `--acumulative` | Mescla a varredura com o índice existente em vez de substituí-lo |
+| `--since-days=N` / `--since=AAAA-MM-DD` | Restringe a **varredura** a uma janela de data |
+| `--no-prune` | Com `--acumulative`, mantém as capturas cujos arquivos sumiram do disco |
+| `--resume` / `--fresh` | Retoma um build interrompido (checkpoint por estação) |
+| `--force` | Refaz o índice mesmo que ele já exista |
+| `--flush` | Apaga o índice |
+
+No modo acumulativo:
+
+- as capturas dentro da janela são lidas do disco e **substituem** o que o índice
+  tinha (uma captura que ganhou um `A.xml` de análise passa a exibi-lo);
+- as capturas fora da janela são **carried over** (mantidas como estão);
+- os arquivos que sumiram do disco saem do registro, e uma captura que ficou sem
+  nenhum arquivo sai do índice;
+- o `operator` e a `geolocation` de uma estação que a janela não tocou continuam
+  vindo do manifesto anterior — sem isso, um build parcial apagaria o operador da
+  estação.
+
+> O `--since` vale só para a varredura: o índice final cobre a janela **e** o que
+> já estava indexado. Fora da janela só a existência dos arquivos é verificada —
+> alteração de conteúdo é lida no próximo build que cobrir a data da captura (e
+> contada em `stale` no manifesto, como aviso).
+
+O manifesto registra como o índice foi montado:
+
+```json
+{
+  "accumulative": true,
+  "carried_over": 128374,
+  "pruned_files": 12,
+  "pruned_captures": 3,
+  "stale": 0
+}
+```
+
 ## 📚 Endpoints da API
 
 Base URL: `http://localhost:8080/api/v2/public`

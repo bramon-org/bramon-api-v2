@@ -107,3 +107,54 @@ php -d memory_limit=512M artisan bramon:index --force --resume --since-days=90
 1. `--since-days` reduz o trabalho à janela que importa;
 2. `--resume` permite repetir o comando até concluir, uma estação por vez, sem perder o progresso;
 3. `BRAMON_INDEX_CHUNK_SIZE=1000` (no `.env`) mantém o pico de memória baixo — o uso agora é limitado pelo chunk, pois os fatos de metadata viajam junto da captura nos blocos ordenados em vez de acumularem em memória.
+
+## Build acumulativo: manter o índice e só atualizar o que mudou
+
+Por padrão `bramon:index` **substitui** o índice: cada execução varre a árvore
+inteira e publica um índice novo. Numa hospedagem compartilhada, onde a varredura
+completa leva minutos, isso é caro demais para rodar a cada hora.
+
+Com `--acumulative` o comando mescla a varredura com o índice já publicado:
+
+```bash
+php -d memory_limit=512M artisan bramon:index --acumulative --since-days=30
+```
+
+1. só a janela dos últimos 30 dias é lida do disco — as capturas dentro dela são
+   atualizadas (uma captura que ganhou um `A.xml` passa a exibi-lo);
+2. as capturas fora da janela são mantidas como estão;
+3. os arquivos que foram apagados do disco saem do registro, e uma captura que
+   ficou sem nenhum arquivo sai do índice;
+4. o `operator` e a `geolocation` das estações que a janela não tocado continuam
+   vindo do manifesto anterior.
+
+O manifesto registra como o índice foi montado (`accumulative`, `carried_over`,
+`pruned_files`, `pruned_captures`, `stale`), e o comando mostra o resumo no
+final da execução.
+
+Opções relacionadas:
+
+- `--no-prune`: mantém as capturas cujos arquivos sumiram, pulando a verificação
+  de existência (um `stat` por arquivo indexado) — útil em árvores enormes.
+- `--resume`: retomável também no modo acumulativo; o checkpoint guarda o modo,
+  então um checkpoint de um build que substitui o índice nunca é reaproveitado
+  por um build acumulativo (e vice-versa).
+
+### Cron
+
+O agendamento do Laravel (`schedule:work`) **não** é mais usado: a cron é
+configurada manualmente na DreamHost. Um exemplo de entrada por hora:
+
+```cron
+17 * * * * cd /home/bramon_api/api && php -d memory_limit=512M artisan bramon:index --acumulative --since-days=30 >> storage/logs/index-build.log 2>&1
+```
+
+O `--acumulative` faz a cada execução valer apenas o que mudou, em vez de
+reconstruir o índice inteiro. Rode a primeira vez sem `--since-days` para ter o
+índice completo:
+
+```bash
+php -d memory_limit=512M artisan bramon:index --force --resume
+```
+
+Depois, as execuções incrementais mantêm o índice em dia.

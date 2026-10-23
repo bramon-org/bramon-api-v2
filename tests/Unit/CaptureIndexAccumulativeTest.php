@@ -38,7 +38,7 @@ class CaptureIndexAccumulativeTest extends TestCase
     }
 
     /**
-     * Two stations, two captures each, three files per capture.
+     * Two stations, two captures each, four files per capture.
      */
     protected function buildFixtureTree(): void
     {
@@ -55,7 +55,7 @@ class CaptureIndexAccumulativeTest extends TestCase
     }
 
     /**
-     * Write the three files of a capture.
+     * Write the four files of an analysed capture.
      */
     protected function writeCapture(string $station, string $date, string $time, bool $withMetadata = true): string
     {
@@ -73,6 +73,10 @@ class CaptureIndexAccumulativeTest extends TestCase
 
         file_put_contents("{$dir}/{$stem}_1P.jpg", 'preview');
         file_put_contents("{$dir}/{$stem}_1T.bmp", 'thumb');
+        file_put_contents(
+            "{$dir}/{$stem}_1A.xml",
+            '<ufoanalyzer_record><ua2_objects><ua2_object fs="61" fe="70" sec="0.15" av="5.01" mag="-1.83" class="J8_PPH"/></ua2_objects></ufoanalyzer_record>'
+        );
 
         return $dir;
     }
@@ -96,7 +100,7 @@ class CaptureIndexAccumulativeTest extends TestCase
 
         $this->assertTrue($manifest['accumulative']);
         $this->assertSame(5, $manifest['total_captures']);
-        $this->assertSame(15, $manifest['total_files']);
+        $this->assertSame(20, $manifest['total_files']);
 
         // The four captures indexed before are still there.
         $fresh = new CaptureIndex($this->indexDir);
@@ -149,15 +153,15 @@ class CaptureIndexAccumulativeTest extends TestCase
         $this->assertSame(0, $manifest['pruned_files']);
         $this->assertSame(0, $manifest['pruned_captures']);
         $this->assertSame(4, $manifest['total_captures']);
-        $this->assertSame(11, $manifest['total_files']);
+        $this->assertSame(15, $manifest['total_files']);
 
         $fresh = new CaptureIndex($this->indexDir);
         $updated = $fresh->captureById($capture['id']);
 
         $this->assertNotNull($updated);
         $this->assertFalse($updated['has_preview']);
-        $this->assertSame(2, $updated['file_count']);
-        $this->assertCount(2, $updated['files']);
+        $this->assertSame(3, $updated['file_count']);
+        $this->assertCount(3, $updated['files']);
     }
 
     public function testAccumulativeBuildRemovesTheFilesThatAreGoneOutsideTheWindow(): void
@@ -178,15 +182,38 @@ class CaptureIndexAccumulativeTest extends TestCase
         $this->assertSame(1, $manifest['pruned_files']);
         $this->assertSame(0, $manifest['pruned_captures']);
         $this->assertSame(4, $manifest['total_captures']);
-        $this->assertSame(11, $manifest['total_files']);
+        $this->assertSame(15, $manifest['total_files']);
 
         $fresh = new CaptureIndex($this->indexDir);
         $updated = $fresh->captureById($capture['id']);
 
         $this->assertNotNull($updated);
         $this->assertFalse($updated['has_preview']);
-        $this->assertSame(2, $updated['file_count']);
-        $this->assertCount(2, $updated['files']);
+        $this->assertSame(3, $updated['file_count']);
+        $this->assertCount(3, $updated['files']);
+    }
+
+    public function testAccumulativeBuildDropsTheStoredCapturesWhoseAnalysisIsGone(): void
+    {
+        $index = $this->buildIndex();
+
+        $capture = $this->captureOf($index, 'TLP1', '20250802');
+
+        // The capture keeps its other files but lost the analysis outside the
+        // window: it must leave the index instead of being carried over.
+        unlink($this->baseDir . '/TLP1/20250802/M20250802_034905_TLP1_1A.xml');
+
+        $manifest = $this->buildIndex([
+            'accumulative' => true,
+            'since' => '2025-09-01',
+        ])->manifest();
+
+        $this->assertSame(1, $manifest['pruned_files']);
+        $this->assertSame(2, $manifest['carried_over']);
+        $this->assertSame(3, $manifest['total_captures']);
+
+        $fresh = new CaptureIndex($this->indexDir);
+        $this->assertNull($fresh->captureById($capture['id']));
     }
 
     public function testAccumulativeBuildDropsTheCapturesWhoseFilesAreAllGone(): void
@@ -196,7 +223,12 @@ class CaptureIndexAccumulativeTest extends TestCase
         $capture = $this->captureOf($index, 'TLP1', '20250802');
 
         $dir = $this->baseDir . '/TLP1/20250802';
-        foreach (['M20250802_034905_TLP1_1.xml', 'M20250802_034905_TLP1_1P.jpg', 'M20250802_034905_TLP1_1T.bmp'] as $file) {
+        foreach ([
+            'M20250802_034905_TLP1_1.xml',
+            'M20250802_034905_TLP1_1P.jpg',
+            'M20250802_034905_TLP1_1T.bmp',
+            'M20250802_034905_TLP1_1A.xml',
+        ] as $file) {
             unlink("{$dir}/{$file}");
         }
 
@@ -205,7 +237,7 @@ class CaptureIndexAccumulativeTest extends TestCase
             'since' => '2025-09-01',
         ])->manifest();
 
-        $this->assertSame(3, $manifest['pruned_files']);
+        $this->assertSame(4, $manifest['pruned_files']);
         $this->assertSame(1, $manifest['pruned_captures']);
         $this->assertSame(3, $manifest['total_captures']);
 
@@ -219,19 +251,19 @@ class CaptureIndexAccumulativeTest extends TestCase
         $index = $this->buildIndex();
 
         $capture = $index->capturesPage(1, 10)['items'][0];
-        $this->assertFalse($capture['analyzed']);
+        $this->assertTrue($capture['analyzed']);
 
-        // The capture gained an analysis file since the last build.
+        // The capture was reanalysed since the last build.
         file_put_contents(
             $this->baseDir . '/TLP2/20250901/M20250901_220000_TLP2_1A.xml',
-            '<ufoanalyzer_record><ua2_objects><ua2_object fs="61" fe="70" sec="0.15" av="5.01" mag="-1.83" class="J8_PPH"/></ua2_objects></ufoanalyzer_record>'
+            '<ufoanalyzer_record><ua2_objects><ua2_object fs="10" fe="20" sec="0.5" av="1.5" mag="-2.5" class="spo"/></ua2_objects></ufoanalyzer_record>'
         );
 
         $manifest = $this->buildIndex(['accumulative' => true])->manifest();
 
         // The capture is updated, not duplicated.
         $this->assertSame(4, $manifest['total_captures']);
-        $this->assertSame(13, $manifest['total_files']);
+        $this->assertSame(16, $manifest['total_files']);
 
         $fresh = new CaptureIndex($this->indexDir);
         $updated = $fresh->captureById($capture['id']);
@@ -239,7 +271,7 @@ class CaptureIndexAccumulativeTest extends TestCase
         $this->assertNotNull($updated);
         $this->assertTrue($updated['has_analyze']);
         $this->assertTrue($updated['analyzed']);
-        $this->assertSame('J8_PPH', $updated['class']);
+        $this->assertSame('spo', $updated['class']);
     }
 
     public function testAccumulativeBuildKeepsTheStoredOperatorWhenTheWindowMissesTheStation(): void
@@ -279,7 +311,12 @@ class CaptureIndexAccumulativeTest extends TestCase
         $this->buildIndex();
 
         $dir = $this->baseDir . '/TLP2/20250901';
-        foreach (['M20250901_220000_TLP2_1.xml', 'M20250901_220000_TLP2_1P.jpg', 'M20250901_220000_TLP2_1T.bmp'] as $file) {
+        foreach ([
+            'M20250901_220000_TLP2_1.xml',
+            'M20250901_220000_TLP2_1P.jpg',
+            'M20250901_220000_TLP2_1T.bmp',
+            'M20250901_220000_TLP2_1A.xml',
+        ] as $file) {
             unlink("{$dir}/{$file}");
         }
 

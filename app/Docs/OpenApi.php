@@ -26,8 +26,10 @@ use OpenApi\Attributes as OA;
 
             Todas as rotas de listagem são servidas a partir de um índice pré-construído
             (`php artisan bramon:index`), portanto o custo de memória de cada requisição
-            é independente da quantidade de arquivos no disco. Se o índice não existir,
-            as rotas retornam 503 com uma mensagem indicando o comando a executar.
+            é independente da quantidade de arquivos no disco. O índice contém somente
+            capturas com análise válida (`A.xml`); capturas não analisadas são ignoradas.
+            Se o índice não existir, as rotas retornam 503 com uma mensagem indicando o
+            comando a executar.
             TXT,
         contact: new OA\Contact(
             name: 'BRAMON',

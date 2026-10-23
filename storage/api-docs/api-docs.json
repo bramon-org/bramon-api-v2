@@ -2,7 +2,7 @@
     "openapi": "3.0.0",
     "info": {
         "title": "BRAMON API",
-        "description": "API REST para acesso às capturas das estações do projeto BRAMON.\n\nTodas as rotas de listagem são servidas a partir de um índice pré-construído\n(`php artisan bramon:index`), portanto o custo de memória de cada requisição\né independente da quantidade de arquivos no disco. Se o índice não existir,\nas rotas retornam 503 com uma mensagem indicando o comando a executar.",
+        "description": "API REST para acesso às capturas das estações do projeto BRAMON.\n\nTodas as rotas de listagem são servidas a partir de um índice pré-construído\n(`php artisan bramon:index`), portanto o custo de memória de cada requisição\né independente da quantidade de arquivos no disco. O índice contém somente\ncapturas com análise válida (`A.xml`); capturas não analisadas são ignoradas.\nSe o índice não existir, as rotas retornam 503 com uma mensagem indicando o\ncomando a executar.",
         "contact": {
             "name": "BRAMON",
             "url": "https://bramonmeteor.org",
@@ -1173,7 +1173,7 @@
                         "nullable": true
                     },
                     "analyzed": {
-                        "description": "Indica que o XML de análise da captura trouxe pelo menos um destes dados.",
+                        "description": "Sempre true nas capturas retornadas: o índice publica apenas capturas cujo XML de análise trouxe pelo menos um destes dados.",
                         "type": "boolean",
                         "example": true
                     }

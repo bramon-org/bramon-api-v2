@@ -37,7 +37,7 @@ class CaptureIndexResumeTest extends TestCase
     }
 
     /**
-     * Two stations, two captures each, three files per capture, on distinct
+     * Two stations, two captures each, four files per capture, on distinct
      * dates so the date filter can split them.
      */
     protected function buildFixtureTree(): void
@@ -58,6 +58,10 @@ class CaptureIndexResumeTest extends TestCase
             file_put_contents("{$dir}/{$stem}_1.xml", '<ufocapture_record observer="Ana" lat="-23.5" lng="-46.6" alt="10"/>');
             file_put_contents("{$dir}/{$stem}_1P.jpg", 'preview');
             file_put_contents("{$dir}/{$stem}_1T.bmp", 'thumb');
+            file_put_contents(
+                "{$dir}/{$stem}_1A.xml",
+                '<ufoanalyzer_record><ua2_objects><ua2_object fs="61" fe="70" sec="0.15" av="5.01" mag="-1.83" class="J8_PPH"/></ua2_objects></ufoanalyzer_record>'
+            );
         }
     }
 
@@ -109,7 +113,7 @@ class CaptureIndexResumeTest extends TestCase
 
         $this->assertTrue($manifest['resumed']);
         $this->assertSame(4, $index->totalCaptures());
-        $this->assertSame(12, $index->totalFiles());
+        $this->assertSame(16, $index->totalFiles());
         $this->assertSame(2, $index->totalStations());
 
         $this->assertSame($referenceIds, array_column($index->capturesPage(1, 10)['items'], 'id'));
@@ -160,7 +164,7 @@ class CaptureIndexResumeTest extends TestCase
         );
 
         $this->assertSame(1, $index->totalCaptures());
-        $this->assertSame(3, $index->totalFiles());
+        $this->assertSame(4, $index->totalFiles());
         $this->assertSame(['since' => '2025-09-01', 'since_days' => null], $manifest['filter']);
 
         $page = $index->capturesPage(1, 10);
@@ -180,7 +184,7 @@ class CaptureIndexResumeTest extends TestCase
 
         // TLP1@0803 and TLP2@0901 survive; both older captures are dropped.
         $this->assertSame(2, $index->totalCaptures());
-        $this->assertSame(6, $index->totalFiles());
+        $this->assertSame(8, $index->totalFiles());
         $this->assertSame(['since' => '2025-08-03', 'since_days' => null], $manifest['filter']);
     }
 

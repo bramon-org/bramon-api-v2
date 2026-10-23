@@ -115,7 +115,7 @@ use OpenApi\Attributes as OA;
         new OA\Property(
             property: 'analyzed',
             type: 'boolean',
-            description: 'Indica que o XML de análise da captura trouxe pelo menos um destes dados.',
+            description: 'Sempre true nas capturas retornadas: o índice publica apenas capturas cujo XML de análise trouxe pelo menos um destes dados.',
             example: true,
         ),
     ],

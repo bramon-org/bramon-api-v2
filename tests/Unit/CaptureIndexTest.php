@@ -44,7 +44,7 @@ class CaptureIndexTest extends TestCase
     }
 
     /**
-     * Two stations, two captures each, three files per capture.
+     * Two stations, two captures each, four files per capture.
      */
     protected function buildFixtureTree(): void
     {
@@ -64,7 +64,21 @@ class CaptureIndexTest extends TestCase
             file_put_contents("{$dir}/{$stem}_1.xml", '<ufocapture_record observer="Ana"/>');
             file_put_contents("{$dir}/{$stem}_1P.jpg", 'preview');
             file_put_contents("{$dir}/{$stem}_1T.bmp", 'thumb');
+            $this->writeAnalysis($dir, "{$stem}_1");
         }
+    }
+
+    /**
+     * Write a valid analysis file for the capture identified by $stem.
+     */
+    protected function writeAnalysis(string $dir, string $stem, string $class = 'J8_PPH'): void
+    {
+        file_put_contents(
+            "{$dir}/{$stem}A.xml",
+            '<ufoanalyzer_record><ua2_objects><ua2_object '
+            . 'fs="61" fe="70" sec="0.15" av="5.01" mag="-1.83" class="' . $class . '"/>'
+            . '</ua2_objects></ufoanalyzer_record>'
+        );
     }
 
     protected function buildIndex(int $chunkSize = 100): CaptureIndex
@@ -98,7 +112,7 @@ class CaptureIndexTest extends TestCase
 
         $this->assertTrue($index->exists());
         $this->assertSame(4, $index->totalCaptures());
-        $this->assertSame(12, $index->totalFiles());
+        $this->assertSame(16, $index->totalFiles());
         $this->assertSame(2, $index->totalStations());
         $this->assertNotNull($index->generatedAt());
 
@@ -177,11 +191,13 @@ class CaptureIndexTest extends TestCase
         $this->assertTrue($capture['has_metadata']);
         $this->assertTrue($capture['has_preview']);
         $this->assertTrue($capture['has_thumbnail']);
-        $this->assertSame(3, $capture['file_count']);
+        $this->assertTrue($capture['has_analyze']);
+        $this->assertTrue($capture['analyzed']);
+        $this->assertSame(4, $capture['file_count']);
 
         $types = array_column($capture['files'], 'type');
         sort($types);
-        $this->assertSame(['metadata', 'preview', 'thumbnail'], $types);
+        $this->assertSame(['analyze', 'metadata', 'preview', 'thumbnail'], $types);
     }
 
     public function testCaptureReadsAnalysisFromTheAnalyzeFile(): void
@@ -225,7 +241,7 @@ class CaptureIndexTest extends TestCase
         $this->assertContains('analyze', $types);
     }
 
-    public function testCaptureWithAnAnalysisWithoutTheExpectedFieldsIsNotAnalysed(): void
+    public function testCaptureWithAnAnalysisWithoutTheExpectedFieldsIsNotIndexed(): void
     {
         $baseDir = $this->baseDir . '_analysis_empty';
         $indexDir = $this->indexDir . '_analysis_empty';
@@ -246,29 +262,29 @@ class CaptureIndexTest extends TestCase
         $index = new CaptureIndex($indexDir);
         $index->rebuild(new FileSystemReader($baseDir, 0), null, 100);
 
-        $capture = $index->captureById(substr(md5('TLP1_20250802_034905'), 0, 32));
-
-        $this->assertNotNull($capture);
-        $this->assertTrue($capture['has_analyze']);
-        $this->assertFalse($capture['analyzed']);
-        $this->assertNull($capture['class']);
+        $this->assertSame(0, $index->totalCaptures());
+        $this->assertNull($index->captureById(substr(md5('TLP1_20250802_034905'), 0, 32)));
     }
 
-    public function testCaptureWithoutAnalysisKeepsTheAnalysisFieldsEmpty(): void
+    public function testCaptureWithoutAnalysisIsNotIndexed(): void
     {
-        $index = $this->buildIndex();
+        $baseDir = $this->baseDir . '_no_analysis';
+        $indexDir = $this->indexDir . '_no_analysis';
+        $this->extraTrees[] = $baseDir;
+        $this->extraTrees[] = $indexDir;
+        $dir = $baseDir . '/TLP1/20250802';
+        @mkdir($dir, 0775, true);
 
-        $capture = $index->captureById(substr(md5('TLP1_20250802_034905'), 0, 32));
+        file_put_contents($dir . '/M20250802_034905_TLP_1.xml', '<ufocapture_record observer="Ana"/>');
+        file_put_contents($dir . '/M20250802_034905_TLP_1P.jpg', 'preview');
 
-        $this->assertNotNull($capture);
-        $this->assertFalse($capture['has_analyze']);
-        $this->assertFalse($capture['analyzed']);
-        $this->assertNull($capture['class']);
-        $this->assertNull($capture['fs']);
-        $this->assertNull($capture['fe']);
-        $this->assertNull($capture['sec']);
-        $this->assertNull($capture['av']);
-        $this->assertNull($capture['mag']);
+        $index = new CaptureIndex($indexDir);
+        $index->rebuild(new FileSystemReader($baseDir, 0), null, 100);
+
+        $this->assertSame(0, $index->totalCaptures());
+        $this->assertSame(0, $index->totalFiles());
+        $this->assertNull($index->captureById(substr(md5('TLP1_20250802_034905'), 0, 32)));
+        $this->assertSame([], $index->stationAggregates());
     }
 
     public function testCaptureReadsObserverFromXmlWithMatchingSequenceAndDifferentTime(): void
@@ -282,6 +298,7 @@ class CaptureIndexTest extends TestCase
 
         file_put_contents($dir . '/M20261010_062041_ELS_1T.jpg', 'thumbnail');
         file_put_contents($dir . '/M20261010_075947_ELS_1.xml', '<ufocapture_record observer="Observer Test"/>');
+        $this->writeAnalysis($dir, 'M20261010_062041_ELS_1');
 
         $index = new CaptureIndex($indexDir);
         $index->rebuild(new FileSystemReader($baseDir, 0), null, 100);
@@ -368,7 +385,7 @@ class CaptureIndexTest extends TestCase
         $index = $this->buildIndex(1);
 
         $this->assertSame(4, $index->totalCaptures());
-        $this->assertSame(12, $index->totalFiles());
+        $this->assertSame(16, $index->totalFiles());
 
         $page = $index->capturesPage(1, 10);
         $timestamps = array_column($page['items'], 'captured_at');
@@ -420,6 +437,7 @@ class CaptureIndexTest extends TestCase
         $stem = 'M20250802_034905_TLP5_1';
         file_put_contents("{$dir}/{$stem}.xml", "<ufocapture_record observer=\"Jos\xe9\"/>");
         file_put_contents("{$dir}/{$stem}P.jpg", 'preview');
+        $this->writeAnalysis($dir, $stem);
 
         $index = new CaptureIndex($indexDir);
         $index->rebuild(new FileSystemReader($baseDir, 0), null, 100);
@@ -453,6 +471,7 @@ class CaptureIndexTest extends TestCase
 
         file_put_contents($dir . '/M20250802_034905_TLP_1.xml', '<ufocapture_record sid="1" cam="IMX291"/>');
         file_put_contents($dir . '/M20250802_034905_TLP_1P.jpg', 'preview');
+        $this->writeAnalysis($dir, 'M20250802_034905_TLP_1');
 
         $index = new CaptureIndex($indexDir);
         $index->rebuild(new FileSystemReader($baseDir, 0), null, 100);
@@ -512,6 +531,7 @@ class CaptureIndexTest extends TestCase
         file_put_contents("{$dir}/{$stem}2.xml", '<ufocapture_record lat="-27.5" alt="1"/>');
         file_put_contents("{$dir}/{$stem}3.xml", '<ufocapture_record observer="Ana"/>');
         file_put_contents("{$dir}/{$stem}_1P.jpg", 'preview');
+        $this->writeAnalysis($dir, $stem);
 
         $index = new CaptureIndex($indexDir);
         $index->rebuild(new FileSystemReader($baseDir, 0), null, 100);
@@ -552,6 +572,7 @@ class CaptureIndexTest extends TestCase
 
             file_put_contents("{$dir}/{$stem}.xml", "<ufocapture_record observer=\"Ana\" {$position}/>");
             file_put_contents("{$dir}/{$stem}P.jpg", 'preview');
+            $this->writeAnalysis($dir, $stem);
         }
 
         $index = new CaptureIndex($indexDir);
@@ -595,6 +616,7 @@ class CaptureIndexTest extends TestCase
         $dir = $this->baseDir . '/TLP1/20250910';
         @mkdir($dir, 0775, true);
         file_put_contents($dir . '/M20250910_120000_TLP1_1.xml', '<ufocapture_record observer="Ana"/>');
+        $this->writeAnalysis($dir, 'M20250910_120000_TLP1_1');
 
         $index->rebuild(new FileSystemReader($this->baseDir, 0), null, 100);
 
@@ -676,7 +698,7 @@ class CaptureIndexTest extends TestCase
         $index = $this->buildIndex();
 
         $this->assertSame(4, $index->totalCaptures());
-        $this->assertSame(12, $index->totalFiles());
+        $this->assertSame(16, $index->totalFiles());
     }
 
     protected function deleteTree(string $dir): void

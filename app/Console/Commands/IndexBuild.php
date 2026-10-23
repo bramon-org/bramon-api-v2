@@ -14,6 +14,10 @@ use Throwable;
  * captures tree on every request, which exhausted the memory limit and hit the
  * FastCGI read timeout on shared hosting. This command does that work once,
  * in a streaming fashion, and writes the result to disk.
+ *
+ * Only captures with a valid analysis file (the `A.xml` suffix) are published:
+ * the rest is scanned for completeness but never enters the index, so the
+ * listing never exposes captures the network has not analysed.
  */
 class IndexBuild extends Command
 {
@@ -29,7 +33,7 @@ class IndexBuild extends Command
                             {--acumulative : Merge the scan into the existing index instead of replacing it}
                             {--no-prune : With --acumulative, keep the stored captures whose files are gone from disk}';
 
-    protected $description = 'Build the on-disk capture index used by the listing endpoints';
+    protected $description = 'Build the on-disk capture index used by the listing endpoints (only captures with a valid analysis are indexed)';
 
     public function handle(CaptureIndex $index, FileSystemReader $reader): int
     {
@@ -95,6 +99,7 @@ class IndexBuild extends Command
         $this->info("Index target:    {$index->getIndexDir()}");
         $this->info("Chunk size:      {$chunkSize}");
         $this->info("Temp directory:  {$tempDir}");
+        $this->info('Filter:          only captures with a valid analysis (A.XML)');
 
         if ($resume) {
             $this->info('Mode:            resumable (checkpoints per station)' . ($fresh ? ', fresh scan' : ''));

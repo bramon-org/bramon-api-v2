@@ -27,7 +27,7 @@ use RuntimeException;
 class CaptureIndex
 {
     /** Bumped whenever the on-disk layout changes. */
-    public const VERSION = 6;
+    public const VERSION = 7;
 
     /**
      * The artefacts a complete index consists of.
@@ -67,7 +67,7 @@ class CaptureIndex
      * build resumed from a checkpoint written by an older version discards it
      * instead of publishing records built with the old fields.
      */
-    public const CHECKPOINT_VERSION = 3;
+    public const CHECKPOINT_VERSION = 4;
 
     /**
      * Bytes read from a metadata file when looking for the record tag.
@@ -1501,6 +1501,10 @@ class CaptureIndex
     /**
      * Write the sorted stream, offset table and station blocks into staging.
      *
+     * Only captures carrying a valid analysis (`analyzed === true`) are
+     * written: everything the listing serves is derived from this stream, so
+     * captures without an A.xml never reach the published index.
+     *
      * When the build is accumulative, the stream written here is the merge of
      * the fresh scan and the captures already stored in the live index: the
      * scan wins for the captures it covers, the ones it does not cover are
@@ -1593,6 +1597,15 @@ class CaptureIndex
         );
 
         foreach ($stream as [$sortKey, $capture, $isFresh]) {
+            // Only captures with a valid analysis are published: the API
+            // listing must not expose captures whose A.xml is missing, empty
+            // or unreadable. The scan still visits them (and accumulative
+            // builds may carry them over), so the filter is applied to the
+            // final stream, whichever side it came from.
+            if (($capture['analyzed'] ?? false) !== true) {
+                continue;
+            }
+
             if ($isFresh) {
                 $associationKey = $this->metadataSequenceKey(
                     (string) $capture['station'],
@@ -2049,7 +2062,9 @@ class CaptureIndex
      * Each capture is reconciled with the disk: the files that were deleted
      * are dropped from it, and a capture that lost every file leaves the
      * index. A capture the scan already covers is not carried over at all, so
-     * the fresh version is the one that counts.
+     * the fresh version is the one that counts. Captures without a valid
+     * analysis are never carried over: the published index only holds
+     * captures the listing can show as analysed.
      *
      * @param  array<int,array<string,mixed>>  $captures
      * @return Generator<int,array<string,mixed>>
@@ -2057,6 +2072,10 @@ class CaptureIndex
     protected function carryOver(array $captures, ?string $baseDir): Generator
     {
         foreach ($captures as $capture) {
+            if (($capture['analyzed'] ?? false) !== true) {
+                continue;
+            }
+
             if ($baseDir === null || $baseDir === '') {
                 $this->mergeStats['carried_over']++;
 
@@ -2067,7 +2086,9 @@ class CaptureIndex
 
             $pruned = $this->pruneCapture($capture, $baseDir);
 
-            if ($pruned === null) {
+            // Losing the analysis file means the capture can no longer be
+            // published, even though it still had other files on disk.
+            if ($pruned === null || ($pruned['analyzed'] ?? false) !== true) {
                 continue;
             }
 

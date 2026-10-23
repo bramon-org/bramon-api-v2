@@ -94,6 +94,13 @@ As rotas de listagem (`/captures`, `/stations`, `/operators`, `/stats`) são ser
 partir de um índice pré-construído em disco, para que o custo de memória de cada
 requisição não dependa da quantidade de arquivos na árvore.
 
+O índice publica **somente capturas com análise válida**: aquelas cujo arquivo
+`A.xml` foi lido e trouxe ao menos um dos campos de análise (`class`, `fs`, `fe`,
+`sec`, `av`, `mag`). Capturas sem esse arquivo, com XML vazio ou corrompido ficam
+fora do índice e não aparecem em nenhuma listagem. Os totais do manifesto
+(`total_captures`, `total_files`, estações e meses) refletem apenas as capturas
+indexadas.
+
 ```bash
 php artisan bramon:index --force
 ```
@@ -119,7 +126,8 @@ No modo acumulativo:
 
 - as capturas dentro da janela são lidas do disco e **substituem** o que o índice
   tinha (uma captura que ganhou um `A.xml` de análise passa a exibi-lo);
-- as capturas fora da janela são **carried over** (mantidas como estão);
+- as capturas fora da janela são **carried over** (mantidas como estão), desde que
+  continuem com análise válida — as sem análise são descartadas;
 - os arquivos que sumiram do disco saem do registro, e uma captura que ficou sem
   nenhum arquivo sai do índice;
 - o `operator` e a `geolocation` de uma estação que a janela não tocou continuam
@@ -278,11 +286,12 @@ observador lido do XML das capturas dessa estação:
 ```
 
 Quem popula isso é o índice: `bramon:index` lê a tag `<ufocapture_record>` de cada
-captura (`observer` = nome, `lid` = código) e grava o resultado em
+captura analisada (`observer` = nome, `lid` = código) e grava o resultado em
 `station_aggregates[estação].operator` no `manifest.json`. Nenhuma captura tem
 campo de e-mail, então o endereço é derivado do nome — a mesma regra usada por
-`bramon:operators-scan`. Uma estação cujas capturas não nomeiam ninguém continua
-recebendo o par genérico `Operador {ESTACAO}` / `{estacao}@bramonmeteor.org`.
+`bramon:operators-scan`. Uma estação cujas capturas analisadas não nomeiam
+ninguém continua recebendo o par genérico `Operador {ESTACAO}` /
+`{estacao}@bramonmeteor.org`.
 
 > Como o manifesto passou a guardar `operator`, um índice no formato anterior é
 > ignorado (a versão do formato é validada na leitura). Rode `bramon:index` após
@@ -344,9 +353,10 @@ própria captura do índice:
 | `/captures` | `has_analyze` | a captura tem (ou não) arquivo de análise |
 | `/captures` | `analyzed` | o XML de análise trouxe pelo menos um dos dados acima |
 
-Uma captura sem arquivo de análise — ou com um XML que não tem `ua2_object` —
-continua com esses campos em `null`/`false`; o build do índice nunca quebra por
-causa de um arquivo de análise corrompido.
+Somente capturas com análise válida entram no índice: uma captura sem `A.xml`,
+com XML vazio/corrompido ou sem `ua2_object` não é indexada nem aparece nas
+listagens. O build nunca quebra por causa de um arquivo de análise corrompido;
+ele apenas descarta a captura.
 
 > Como o payload da captura passou a carregar esses campos, um índice no formato
 > anterior é ignorado (a versão do formato é validada na leitura). Rode

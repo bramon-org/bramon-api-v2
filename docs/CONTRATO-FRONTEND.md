@@ -399,7 +399,7 @@ denial-of-service para a própria API.
 | 10 | Filtro `station` é case-insensitive | Case-sensitive. `tlp1` → 0 resultados |
 | 11 | `/stats.captures_by_month` é objeto | É **array de números sem rótulo** ⚠️ bug do backend |
 | 12 | `/stats.captures_by_station` tem dados | Sempre `[]` ⚠️ bug do backend |
-| 13 | `capture.analyzed` indica análise | Só depois de `bramon:index`; `null`/`false` sem arquivo `A.xml` |
+| 13 | `capture.analyzed` indica análise | Toda captura retornada tem `analyzed: true`; sem `A.xml` válido ela não entra no índice |
 | 14 | Busca aceita `q` vazio | 422 — `q` é obrigatório |
 
 ### Helper de data obrigatório
@@ -446,13 +446,15 @@ que ele traz:
 
 Dois flags acompanham o bloco:
 
-- `has_analyze` — a captura **tem** arquivo de análise.
-- `analyzed` — o XML trouxe pelo menos um destes dados. Uma análise que não
-  registra a classificação deixa `class` em `null` mesmo com `analyzed: true`.
+- `has_analyze` — a captura tem arquivo de análise (sempre `true` nas capturas
+  retornadas pela API).
+- `analyzed` — o XML trouxe pelo menos um destes dados (sempre `true` nas
+  capturas retornadas). Uma análise que não registra a classificação deixa
+  `class` em `null` mesmo com `analyzed: true`.
 
-Uma captura sem análise (ou com um XML que não tem `ua2_object`) tem todos esses
-campos em `null`/`false`. **Não assuma que a análise existe**: parte das capturas
-da rede nunca foi analisada.
+Capturas sem análise válida — sem `A.xml`, com XML vazio/corrompido ou sem
+`ua2_object` — **não entram no índice e não são retornadas** por nenhum endpoint
+de listagem. Não é preciso tratar capturas não analisadas na UI.
 
 > Os valores só aparecem depois que o índice é reconstruído no servidor
 > (`php artisan bramon:index`). Um índice no formato anterior é ignorado, e as

@@ -80,6 +80,10 @@ class CaptureApiTest extends TestCase
 
             file_put_contents("{$dir}/{$stem}_1.xml", '<ufocapture_record observer="Ana Silva"/>');
             file_put_contents("{$dir}/{$stem}_1P.jpg", 'preview');
+            file_put_contents(
+                "{$dir}/{$stem}_1A.xml",
+                '<ufoanalyzer_record><ua2_objects><ua2_object fs="61" fe="70" sec="0.15" av="5.01" mag="-1.83" class="J8_PPH"/></ua2_objects></ufoanalyzer_record>'
+            );
         }
 
         file_put_contents($this->baseDir . '/stations.json', json_encode([
@@ -138,7 +142,7 @@ class CaptureApiTest extends TestCase
                 'last_updated',
             ])
             ->assertJsonPath('total_captures', 3)
-            ->assertJsonPath('total_files', 6)
+            ->assertJsonPath('total_files', 9)
             ->assertJsonPath('total_stations', 2);
     }
 
@@ -194,18 +198,25 @@ class CaptureApiTest extends TestCase
         $this->assertContains('analyze', array_column($capture['files'], 'type'));
     }
 
-    public function testCapturesWithoutAnalysisKeepTheAnalysisFieldsEmpty(): void
+    public function testCapturesWithoutAnalysisAreNotListed(): void
     {
-        $response = $this->getJson('/api/v2/public/captures?station=TLP2');
+        $dir = $this->baseDir . '/TLP2/20251001';
+        @mkdir($dir, 0775, true);
+        file_put_contents("{$dir}/M20251001_120000_TLP2_1.xml", '<ufocapture_record observer="Ana Silva"/>');
+        file_put_contents("{$dir}/M20251001_120000_TLP2_1P.jpg", 'preview');
 
-        $response->assertStatus(200);
+        $this->buildIndex();
 
-        $capture = $response->json('data.0');
+        // The station still lists only its analysed capture.
+        $response = $this->getJson('/api/v2/public/captures?station=TLP2&per_page=10');
 
-        $this->assertFalse($capture['has_analyze']);
-        $this->assertFalse($capture['analyzed']);
-        $this->assertNull($capture['class']);
-        $this->assertNull($capture['fs']);
+        $response->assertStatus(200)
+            ->assertJsonPath('total', 1)
+            ->assertJsonPath('data.0.capture_date', '20250802');
+
+        // And the unanalysed capture has no detail endpoint either.
+        $captureId = substr(md5('TLP2_20251001_120000'), 0, 32);
+        $this->getJson("/api/v2/public/captures/{$captureId}")->assertStatus(404);
     }
 
     public function testCapturesListIsNewestFirst(): void
